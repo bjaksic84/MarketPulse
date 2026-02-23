@@ -20,6 +20,8 @@ import pandas as pd
 
 from .lightgbm_classifier import MarketPulseLGBClassifier
 from .xgboost_classifier import MarketPulseXGBClassifier
+from .xgboost_regressor import MarketPulseXGBRegressor
+from .lightgbm_regressor import MarketPulseLGBRegressor
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +48,8 @@ class MarketPulseEnsemble:
     MODEL_REGISTRY = {
         "xgboost_classifier": MarketPulseXGBClassifier,
         "lightgbm_classifier": MarketPulseLGBClassifier,
+        "xgboost_regressor": MarketPulseXGBRegressor,
+        "lightgbm_regressor": MarketPulseLGBRegressor,
     }
 
     def __init__(
@@ -67,6 +71,11 @@ class MarketPulseEnsemble:
         self.model_specs = models_config
         self.models: List[Tuple[str, float, object]] = []  # (name, weight, model)
         self.feature_names: list = []
+
+        # Detect regression mode from model types
+        self._is_regression = any(
+            "regressor" in m.get("type", "") for m in models_config
+        )
 
         # Normalize weights
         total_w = sum(m.get("weight", 1.0) for m in models_config)
@@ -134,13 +143,20 @@ class MarketPulseEnsemble:
 
         P_ensemble(c) = Σ w_i · P_i(c)
 
+        For regression ensembles, returns predictions as (n_samples, 1).
+
         Returns
         -------
         np.ndarray
-            Shape (n_samples, num_classes)
+            Shape (n_samples, num_classes) for classification,
+            or (n_samples, 1) for regression.
         """
         if not self.models:
             raise RuntimeError("Ensemble not trained. Call fit() first.")
+
+        if self._is_regression:
+            preds = self.predict(X)
+            return preds.reshape(-1, 1)
 
         proba_sum = np.zeros((len(X), self.num_classes))
 
@@ -151,7 +167,14 @@ class MarketPulseEnsemble:
         return proba_sum
 
     def predict(self, X: pd.DataFrame) -> np.ndarray:
-        """Predict class labels via argmax of ensemble probabilities."""
+        """Predict class labels (classification) or values (regression)."""
+        if self._is_regression:
+            # Weighted-average of raw predictions
+            preds_sum = np.zeros(len(X))
+            for name, weight, model in self.models:
+                preds_sum += weight * model.predict(X)
+            return preds_sum
+
         proba = self.predict_proba(X)
         return proba.argmax(axis=1)
 

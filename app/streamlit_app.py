@@ -1,8 +1,16 @@
 """
-MarketPulse Streamlit Dashboard.
+MarketPulse Streamlit Dashboard — Phase 4.
 
 Interactive web application for exploring predictions,
-model performance, and stock clustering analysis.
+model performance, stock clustering, and regression analysis.
+
+Features:
+- Multi-market support with market-specific strategies
+- Ensemble models (XGBoost + LightGBM)
+- Market-adaptive + macro features
+- Regime detection overlay
+- Classification AND regression views
+- Strategy selector
 
 Run with: streamlit run app/streamlit_app.py
 """
@@ -32,8 +40,13 @@ from src.data.preprocessing import preprocess_ohlcv
 from src.features.labels import generate_labels, get_clean_features_and_labels
 from src.features.returns import compute_return_features
 from src.features.technical import compute_technical_indicators
+from src.features.market_adaptive import compute_market_adaptive_features
+from src.features.macro import compute_macro_features
+from src.analysis.regime import detect_regime, REGIME_LABELS
 from src.models.evaluator import MarketPulseEvaluator
+from src.models.regression_evaluator import RegressionEvaluator
 from src.models.xgboost_classifier import MarketPulseXGBClassifier
+from src.models.ensemble import MarketPulseEnsemble
 from src.utils.validation import WalkForwardValidator
 
 
@@ -45,6 +58,26 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+
+# ──────────────────── Strategy Mapping ────────────────────
+
+MARKET_STRATEGY_MAP = {
+    "stocks": "short_term",
+    "crypto": "crypto_short_term",
+    "futures": "futures_short_term",
+    "indices": "indices_short_term",
+}
+
+
+def _get_available_strategies():
+    """List all available strategy config files."""
+    config_dir = PROJECT_ROOT / "config" / "strategies"
+    strategies = []
+    if config_dir.exists():
+        for f in sorted(config_dir.glob("*.yaml")):
+            strategies.append(f.stem)
+    return strategies if strategies else ["short_term"]
 
 
 # ──────────────────── Sidebar ────────────────────
@@ -74,12 +107,29 @@ def render_sidebar():
         help="Select a specific instrument",
     )
 
+    # Strategy selection (Phase 4)
+    available_strategies = _get_available_strategies()
+    default_strategy = MARKET_STRATEGY_MAP.get(market_name, "short_term")
+    default_idx = (
+        available_strategies.index(default_strategy)
+        if default_strategy in available_strategies
+        else 0
+    )
+    strategy_name = st.sidebar.selectbox(
+        "Strategy",
+        available_strategies,
+        index=default_idx,
+        help="Strategy profile (auto-selected per market)",
+    )
+    strategy_config = load_strategy_config(strategy_name)
+
     # Date range
+    years = strategy_config.get("data", {}).get("years_of_history", 5)
     col1, col2 = st.sidebar.columns(2)
     with col1:
         start_date = st.date_input(
             "Start",
-            datetime.now() - timedelta(days=5 * 365),
+            datetime.now() - timedelta(days=years * 365),
         )
     with col2:
         end_date = st.date_input("End", datetime.now())
@@ -88,74 +138,128 @@ def render_sidebar():
     st.sidebar.divider()
     st.sidebar.subheader("Prediction Settings")
 
+    horizon_options = strategy_config.get("horizon_days", [1, 3, 5])
+    default_horizon = strategy_config.get("default_horizon", 1)
     horizon = st.sidebar.selectbox(
         "Prediction Horizon (days)",
-        [1, 3, 5],
-        index=0,
+        horizon_options,
+        index=(
+            horizon_options.index(default_horizon)
+            if default_horizon in horizon_options
+            else 0
+        ),
     )
 
-    num_classes = st.sidebar.radio(
-        "Classification Mode",
-        [2, 3],
-        index=1,
-        format_func=lambda x: "Binary (UP/DOWN)" if x == 2 else "Ternary (UP/FLAT/DOWN)",
-    )
+    label_type = strategy_config.get("label_type", "classification")
 
-    threshold = st.sidebar.slider(
-        "FLAT Zone Threshold (%)",
-        min_value=0.5,
-        max_value=3.0,
-        value=1.0,
-        step=0.25,
-        disabled=(num_classes == 2),
+    if label_type == "classification":
+        num_classes = st.sidebar.radio(
+            "Classification Mode",
+            [2, 3],
+            index=1,
+            format_func=lambda x: (
+                "Binary (UP/DOWN)" if x == 2 else "Ternary (UP/FLAT/DOWN)"
+            ),
+        )
+
+        threshold_default = strategy_config.get("threshold", 0.01)
+        threshold = st.sidebar.slider(
+            "FLAT Zone Threshold (%)",
+            min_value=0.5,
+            max_value=5.0,
+            value=threshold_default * 100,
+            step=0.25,
+            disabled=(num_classes == 2),
+        )
+    else:
+        num_classes = 3
+        threshold = 1.0
+
+    # Model mode
+    st.sidebar.divider()
+    use_ensemble = st.sidebar.checkbox(
+        "Use Ensemble (XGB + LGB)",
+        value=strategy_config.get("ensemble", {}).get("enabled", True),
+        help="Combine XGBoost + LightGBM for more robust predictions",
     )
 
     # View selection
     st.sidebar.divider()
-    view = st.sidebar.radio(
-        "View",
-        ["Ticker Explorer", "Prediction", "Model Performance", "Clustering"],
-    )
+    views = ["Ticker Explorer", "Prediction", "Model Performance", "Clustering"]
+    if label_type == "regression" or "regression" in strategy_name:
+        views.insert(3, "Regression")
+    view = st.sidebar.radio("View", views)
 
     return {
         "market_name": market_name,
         "market_config": market_config,
         "ticker": selected_ticker,
+        "strategy_name": strategy_name,
+        "strategy_config": strategy_config,
         "start_date": start_date.strftime("%Y-%m-%d"),
         "end_date": end_date.strftime("%Y-%m-%d"),
         "horizon": horizon,
         "num_classes": num_classes,
         "threshold": threshold / 100,
+        "label_type": label_type,
+        "use_ensemble": use_ensemble,
         "view": view,
     }
 
 
-# ──────────────────── Data Loading ────────────────────
+# ──────────────────── Data Loading (Enhanced) ────────────────────
 
-@st.cache_data(ttl=3600, show_spinner="Fetching market data...")
-def load_ticker_data(fmt_ticker: str, start: str, end: str, market_name: str):
-    """Fetch and preprocess data for a ticker (cached for 1 hour)."""
+@st.cache_data(ttl=3600, show_spinner="Fetching & enriching data...")
+def load_enriched_data(
+    fmt_ticker: str,
+    start: str,
+    end: str,
+    market_name: str,
+    strategy_name: str,
+):
+    """Fetch, preprocess, compute ALL features (cached 1 hour).
+
+    Includes: technical + returns + market-adaptive + macro + regime.
+    """
     market_config = load_market_config(market_name)
+    strategy_config = load_strategy_config(strategy_name)
     fetcher = YFinanceFetcher(market_config=market_config)
     raw = fetcher.fetch(fmt_ticker, start=start, end=end)
     if raw.empty:
         return pd.DataFrame()
+
     df = preprocess_ohlcv(raw, market_config=market_config)
     df = compute_technical_indicators(df)
     df = compute_return_features(df)
+
+    # Phase 3: market-adaptive features
+    df = compute_market_adaptive_features(
+        df, market_name=market_name, strategy_config=strategy_config
+    )
+
+    # Phase 3: regime detection
+    df = detect_regime(df, market_name=market_name)
+
+    # Phase 4: macro features
+    df = compute_macro_features(df, strategy_config=strategy_config)
+
     return df
 
 
 # ──────────────────── Views ────────────────────
 
 def render_ticker_explorer(params):
-    """Candlestick chart with technical indicators overlay."""
+    """Candlestick chart with technical indicators + regime overlay."""
     st.header(f"📊 {params['ticker']} — Ticker Explorer")
 
     fmt_ticker = params["market_config"].format_ticker(params["ticker"])
 
-    df = load_ticker_data(
-        fmt_ticker, params["start_date"], params["end_date"], params["market_name"]
+    df = load_enriched_data(
+        fmt_ticker,
+        params["start_date"],
+        params["end_date"],
+        params["market_name"],
+        params["strategy_name"],
     )
 
     if df.empty:
@@ -176,7 +280,15 @@ def render_ticker_explorer(params):
         rsi = df["rsi_14"].iloc[-1] if "rsi_14" in df.columns else 0
         st.metric("RSI (14)", f"{rsi:.1f}")
     with col5:
-        st.metric("Data Points", f"{len(df):,}")
+        regime = (
+            df["regime_label"].iloc[-1]
+            if "regime_label" in df.columns
+            else "N/A"
+        )
+        st.metric(
+            "Regime",
+            regime.title() if isinstance(regime, str) else "N/A",
+        )
 
     # Candlestick chart
     fig = go.Figure()
@@ -256,15 +368,51 @@ def render_ticker_explorer(params):
     )
     st.plotly_chart(fig_vol, use_container_width=True)
 
+    # Regime overlay (Phase 3)
+    if "regime" in df.columns:
+        show_regime = st.checkbox("Show Market Regime", value=True)
+        if show_regime:
+            fig_regime = go.Figure()
+            colors_map = {0: "red", 1: "gray", 2: "green"}
+            for regime_val, color in colors_map.items():
+                mask = df["regime"] == regime_val
+                if mask.any():
+                    fig_regime.add_trace(go.Scatter(
+                        x=df.index[mask],
+                        y=df["close"][mask],
+                        mode="markers",
+                        marker=dict(size=3, color=color),
+                        name=REGIME_LABELS.get(regime_val, "?"),
+                    ))
+            fig_regime.update_layout(
+                title="Market Regime (color = regime)",
+                height=300,
+                template="plotly_white",
+            )
+            st.plotly_chart(fig_regime, use_container_width=True)
+
+
+def _build_model(params):
+    """Build model based on ensemble setting and strategy config."""
+    strategy_config = params["strategy_config"]
+    if params["use_ensemble"]:
+        return MarketPulseEnsemble.from_strategy_config(strategy_config)
+    else:
+        return MarketPulseXGBClassifier.from_strategy_config(strategy_config)
+
 
 def render_prediction(params):
-    """Prediction panel with SHAP explanation."""
+    """Prediction panel with SHAP explanation (ensemble-aware)."""
     st.header(f"🔮 {params['ticker']} — Price Prediction")
 
     fmt_ticker = params["market_config"].format_ticker(params["ticker"])
 
-    df = load_ticker_data(
-        fmt_ticker, params["start_date"], params["end_date"], params["market_name"]
+    df = load_enriched_data(
+        fmt_ticker,
+        params["start_date"],
+        params["end_date"],
+        params["market_name"],
+        params["strategy_name"],
     )
 
     if df.empty:
@@ -280,22 +428,19 @@ def render_prediction(params):
         threshold=params["threshold"],
     )
 
-    # Get clean features and labels
     X, y = get_clean_features_and_labels(labeled_df)
 
     if len(X) < 600:
         st.warning(f"Insufficient data ({len(X)} samples). Need at least 600.")
         return
 
-    # Train a model on all but the last 21 days
+    # Train on all but last 21 days
     train_end = len(X) - 21
     X_train, y_train = X.iloc[:train_end], y.iloc[:train_end]
     X_test, y_test = X.iloc[train_end:], y.iloc[train_end:]
 
     with st.spinner("Training model..."):
-        strategy_config = load_strategy_config("short_term")
-        model = MarketPulseXGBClassifier.from_strategy_config(strategy_config)
-        model.num_classes = params["num_classes"]
+        model = _build_model(params)
         model.fit(X_train, y_train)
 
     # Latest prediction
@@ -303,12 +448,16 @@ def render_prediction(params):
     pred = model.predict(X_latest)[0]
     proba = model.predict_proba(X_latest)[0]
 
-    class_names = {0: "DOWN", 1: "FLAT", 2: "UP"} if params["num_classes"] == 3 else {0: "DOWN", 1: "UP"}
+    class_names = (
+        {0: "DOWN", 1: "FLAT", 2: "UP"}
+        if params["num_classes"] == 3
+        else {0: "DOWN", 1: "UP"}
+    )
     pred_name = class_names[int(pred)]
     confidence = proba.max() * 100
 
     # Display prediction
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
 
     color_map = {"UP": "🟢", "DOWN": "🔴", "FLAT": "🟡"}
     with col1:
@@ -318,6 +467,23 @@ def render_prediction(params):
         st.metric("Confidence", f"{confidence:.1f}%")
     with col3:
         st.metric("As of", X_latest.index[-1].strftime("%Y-%m-%d"))
+    with col4:
+        model_type = "Ensemble" if params["use_ensemble"] else "XGBoost"
+        st.metric("Model", model_type)
+
+    # Ensemble agreement (Phase 3)
+    if params["use_ensemble"] and hasattr(model, "get_agreement_score"):
+        agreement = model.get_agreement_score(X_latest)
+        if len(agreement) > 0:
+            ag_pct = agreement[0] * 100
+            st.info(
+                f"Ensemble agreement: {ag_pct:.0f}% — "
+                + (
+                    "All models agree"
+                    if ag_pct == 100
+                    else "Models partially disagree"
+                )
+            )
 
     # Probability breakdown
     st.subheader("Class Probabilities")
@@ -363,13 +529,17 @@ def render_prediction(params):
 
 
 def render_model_performance(params):
-    """Walk-forward validation results."""
+    """Walk-forward validation with ensemble + adaptive features."""
     st.header(f"📉 {params['ticker']} — Model Performance")
 
     fmt_ticker = params["market_config"].format_ticker(params["ticker"])
 
-    df = load_ticker_data(
-        fmt_ticker, params["start_date"], params["end_date"], params["market_name"]
+    df = load_enriched_data(
+        fmt_ticker,
+        params["start_date"],
+        params["end_date"],
+        params["market_name"],
+        params["strategy_name"],
     )
 
     if df.empty:
@@ -391,16 +561,17 @@ def render_model_performance(params):
         st.warning(f"Insufficient data ({len(X)} samples).")
         return
 
-    # Walk-forward validation
+    # Use strategy-specific validation settings
+    strategy = params["strategy_config"]
+    val_cfg = strategy.get("validation", {})
     validator = WalkForwardValidator(
-        initial_train_days=504,
-        test_days=21,
-        step_days=21,
+        initial_train_days=val_cfg.get("initial_train_days", 504),
+        test_days=val_cfg.get("test_days", 21),
+        step_days=val_cfg.get("step_days", 21),
     )
     folds = validator.split(X)
 
     evaluator = MarketPulseEvaluator(num_classes=params["num_classes"])
-    strategy_config = load_strategy_config("short_term")
 
     fold_accuracies = []
     fold_f1s = []
@@ -413,8 +584,7 @@ def render_model_performance(params):
     for i, fold in enumerate(folds):
         X_train, y_train, X_test, y_test = validator.get_fold_data(X, y, fold)
 
-        model = MarketPulseXGBClassifier.from_strategy_config(strategy_config)
-        model.num_classes = params["num_classes"]
+        model = _build_model(params)
         model.fit(X_train, y_train)
 
         y_pred = model.predict(X_test)
@@ -437,6 +607,17 @@ def render_model_performance(params):
         progress.progress((i + 1) / len(folds), text=f"Fold {i + 1}/{len(folds)}")
 
     progress.empty()
+
+    # Info bar
+    model_label = (
+        "Ensemble (XGB + LGB)" if params["use_ensemble"] else "XGBoost only"
+    )
+    st.info(
+        f"**Strategy:** {params['strategy_name']} | "
+        f"**Model:** {model_label} | "
+        f"**Features:** technical + returns + adaptive + macro + regime | "
+        f"**Folds:** {len(folds)}"
+    )
 
     # Summary metrics
     from sklearn.metrics import accuracy_score
@@ -481,7 +662,6 @@ def render_model_performance(params):
     # Confusion matrix
     st.subheader("Aggregate Confusion Matrix")
     from sklearn.metrics import confusion_matrix
-    import plotly.figure_factory as ff
 
     class_names = (
         ["DOWN", "FLAT", "UP"] if params["num_classes"] == 3 else ["DOWN", "UP"]
@@ -576,11 +756,169 @@ def render_clustering(params):
         st.markdown(f"**Cluster {cluster_id}** — *{label}*: {', '.join(members)}")
 
 
+def render_regression(params):
+    """Regression analysis: predict return magnitude (Phase 4)."""
+    st.header(f"📐 {params['ticker']} — Return Regression")
+
+    fmt_ticker = params["market_config"].format_ticker(params["ticker"])
+
+    df = load_enriched_data(
+        fmt_ticker,
+        params["start_date"],
+        params["end_date"],
+        params["market_name"],
+        params["strategy_name"],
+    )
+
+    if df.empty:
+        st.error(f"No data available for {fmt_ticker}")
+        return
+
+    # Generate regression labels
+    labeled_df = generate_labels(
+        df,
+        horizon=params["horizon"],
+        label_type="regression",
+    )
+
+    X, y = get_clean_features_and_labels(labeled_df)
+
+    if len(X) < 600:
+        st.warning(f"Insufficient data ({len(X)} samples).")
+        return
+
+    # Use regression strategy config if available
+    try:
+        reg_strategy = load_strategy_config("medium_term_regression")
+    except Exception:
+        reg_strategy = params["strategy_config"]
+
+    val_cfg = reg_strategy.get("validation", {})
+    validator = WalkForwardValidator(
+        initial_train_days=val_cfg.get("initial_train_days", 504),
+        test_days=val_cfg.get("test_days", 42),
+        step_days=val_cfg.get("step_days", 21),
+    )
+    folds = validator.split(X)
+
+    reg_evaluator = RegressionEvaluator()
+
+    fold_results = []
+    all_true = []
+    all_pred = []
+
+    progress = st.progress(0, text="Running regression walk-forward...")
+
+    for i, fold in enumerate(folds):
+        X_train, y_train, X_test, y_test = validator.get_fold_data(X, y, fold)
+
+        ensemble = MarketPulseEnsemble.from_strategy_config(reg_strategy)
+        ensemble.fit(X_train, y_train)
+
+        y_pred_fold = ensemble.predict(X_test)
+
+        result = reg_evaluator.evaluate_fold(
+            y_true=y_test.values,
+            y_pred=y_pred_fold,
+            fold_number=fold.fold_number,
+            train_size=fold.train_size,
+            test_start_date=fold.test_start_date,
+            test_end_date=fold.test_end_date,
+        )
+        fold_results.append(result)
+        all_true.extend(y_test.values)
+        all_pred.extend(y_pred_fold)
+
+        progress.progress(
+            (i + 1) / len(folds), text=f"Fold {i + 1}/{len(folds)}"
+        )
+
+    progress.empty()
+
+    # Aggregate
+    report = reg_evaluator.aggregate_results(
+        fold_results, ticker=fmt_ticker, horizon=params["horizon"],
+    )
+
+    # Summary
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric(
+            "Directional Accuracy",
+            f"{report.mean_directional_accuracy:.1%}",
+        )
+    with col2:
+        st.metric("MAE", f"{report.mean_mae:.5f}")
+    with col3:
+        st.metric("R²", f"{report.mean_r2:.4f}")
+    with col4:
+        st.metric("Info. Coefficient", f"{report.mean_ic:.4f}")
+
+    # Scatter plot
+    st.subheader("Predicted vs Actual Returns")
+    all_true_arr = np.array(all_true)
+    all_pred_arr = np.array(all_pred)
+
+    fig_scatter = go.Figure()
+    fig_scatter.add_trace(go.Scatter(
+        x=all_true_arr,
+        y=all_pred_arr,
+        mode="markers",
+        marker=dict(size=4, color="steelblue", opacity=0.4),
+        name="Predictions",
+    ))
+    lims = [
+        min(all_true_arr.min(), all_pred_arr.min()),
+        max(all_true_arr.max(), all_pred_arr.max()),
+    ]
+    fig_scatter.add_trace(go.Scatter(
+        x=lims,
+        y=lims,
+        mode="lines",
+        line=dict(color="red", dash="dash"),
+        name="Perfect",
+    ))
+    fig_scatter.update_layout(
+        title=f"Predicted vs Actual {params['horizon']}d Returns",
+        xaxis_title="Actual Return",
+        yaxis_title="Predicted Return",
+        template="plotly_white",
+        height=400,
+    )
+    st.plotly_chart(fig_scatter, use_container_width=True)
+
+    # Directional accuracy per fold
+    st.subheader("Directional Accuracy per Fold")
+    das = [f.directional_accuracy for f in fold_results]
+    fig_da = go.Figure()
+    fig_da.add_trace(
+        go.Bar(x=list(range(len(das))), y=das, marker_color="steelblue")
+    )
+    fig_da.add_hline(
+        y=0.5,
+        line_dash="dash",
+        line_color="red",
+        annotation_text="Random (50%)",
+    )
+    fig_da.add_hline(
+        y=np.mean(das),
+        line_dash="dash",
+        line_color="green",
+        annotation_text=f"Mean: {np.mean(das):.3f}",
+    )
+    fig_da.update_layout(
+        xaxis_title="Fold",
+        yaxis_title="Directional Accuracy",
+        template="plotly_white",
+        height=350,
+    )
+    st.plotly_chart(fig_da, use_container_width=True)
+
+
 # ──────────────────── Main ────────────────────
 
 def main():
     params = render_sidebar()
-
     view = params["view"]
 
     if view == "Ticker Explorer":
@@ -589,6 +927,8 @@ def main():
         render_prediction(params)
     elif view == "Model Performance":
         render_model_performance(params)
+    elif view == "Regression":
+        render_regression(params)
     elif view == "Clustering":
         render_clustering(params)
 

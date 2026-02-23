@@ -165,7 +165,7 @@ def get_clean_features_and_labels(
     """
     # Columns that are NEVER features
     exclude_cols = {
-        "label", "label_name",
+        "label", "label_name", "regime_label",
         "open", "high", "low", "close", "volume", "adj_close",
     }
     # Also exclude any forward return columns

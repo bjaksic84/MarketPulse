@@ -36,6 +36,10 @@ from .ensemble import MarketPulseEnsemble
 from ..features.market_adaptive import compute_market_adaptive_features
 from ..analysis.regime import detect_regime
 
+# Phase 4 imports
+from ..features.macro import compute_macro_features
+from .regression_evaluator import RegressionEvaluator
+
 # Sentiment (Phase 2) — optional import
 try:
     from ..features.sentiment import fetch_and_score_news, merge_sentiment_features
@@ -120,6 +124,12 @@ class MarketPulseTrainer:
         self.use_market_adaptive = use_market_adaptive and (
             "market_adaptive" in self.strategy_config.get("features", [])
         )
+
+        # Phase 4: macro features
+        self.use_macro = "macro" in self.strategy_config.get("features", [])
+
+        # Regression evaluator (Phase 4)
+        self.regression_evaluator = RegressionEvaluator()
 
     def run(self, verbose: bool = True) -> Dict[str, EvaluationReport]:
         """Execute the full training pipeline for all tickers.
@@ -231,6 +241,13 @@ class MarketPulseTrainer:
         # 3d. Regime detection (Phase 3)
         logger.info("Detecting market regime...")
         df = detect_regime(df, market_name=self.market_name)
+
+        # 3e. Macro features (Phase 4)
+        if self.use_macro:
+            logger.info("Computing macro features...")
+            df = compute_macro_features(
+                df, strategy_config=self.strategy_config
+            )
 
         # 4. Generate labels
         logger.info(f"Generating labels (horizon={self.horizon}d)...")
@@ -363,6 +380,12 @@ class MarketPulseTrainer:
                 strategy_config=self.strategy_config,
             )
         df = detect_regime(df, market_name=self.market_name)
+
+        # Phase 4: macro features
+        if self.use_macro:
+            df = compute_macro_features(
+                df, strategy_config=self.strategy_config
+            )
 
         # Get the last row of features (current state)
         exclude_cols = {

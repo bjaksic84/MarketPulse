@@ -11,6 +11,7 @@ from .market_adaptive import (
     compute_market_adaptive_features,
     get_adaptive_feature_names,
 )
+from .macro import compute_macro_features, get_macro_feature_names
 
 __all__ = [
     "compute_technical_indicators",
@@ -22,4 +23,6 @@ __all__ = [
     "select_features_pipeline",
     "compute_market_adaptive_features",
     "get_adaptive_feature_names",
+    "compute_macro_features",
+    "get_macro_feature_names",
 ]

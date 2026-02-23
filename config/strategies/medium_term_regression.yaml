@@ -1,0 +1,77 @@
+# Medium-Term Regression Strategy
+# Predicts actual RETURN MAGNITUDE (not just direction)
+# Useful for position sizing and risk management
+
+strategy:
+  name: "medium_term_regression"
+  display_name: "Medium-Term Return Regression (5-10 Days)"
+
+  # Prediction horizons
+  horizon_days: [5, 10]
+  default_horizon: 5
+
+  # Label configuration — REGRESSION mode
+  label_type: "regression"
+  # threshold and num_classes not used in regression
+
+  # Feature modules
+  features:
+    - technical
+    - returns
+    - market_adaptive
+    - macro
+    - sentiment
+
+  # Model configuration — XGBoost Regressor
+  model:
+    type: "xgboost_regressor"
+    hyperparameters:
+      max_depth: 5
+      n_estimators: 500
+      learning_rate: 0.02
+      subsample: 0.75
+      colsample_bytree: 0.75
+      min_child_weight: 5
+      gamma: 0.15
+      reg_alpha: 0.3
+      reg_lambda: 2.0             # Strong regularization for regression
+      random_state: 42
+      n_jobs: -1
+
+  # Ensemble
+  ensemble:
+    enabled: true
+    models:
+      - type: "xgboost_regressor"
+        weight: 0.5
+      - type: "lightgbm_regressor"
+        weight: 0.5
+
+  # Validation
+  validation:
+    method: "walk_forward"
+    initial_train_days: 504
+    test_days: 42
+    step_days: 21
+    min_train_samples: 400
+
+  # Data
+  data:
+    years_of_history: 6
+    min_data_points: 1200
+    max_missing_pct: 0.05
+
+  # Feature selection
+  feature_selection:
+    method: "importance"
+    max_features: 25
+    min_importance: 0.003
+
+  # Adaptive features
+  market_adaptive:
+    weekend_effects: false
+    gap_analysis: true
+    volatility_regime: true
+    mean_reversion: true
+    correlation_features: true
+    volume_spike_multiplier: 2.0

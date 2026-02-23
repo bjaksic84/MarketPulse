@@ -1,0 +1,82 @@
+# Medium-Term Trading Strategy Configuration
+# Predicts 5-10 day price direction and return magnitude
+# Uses wider horizons to overcome daily noise that hurts short-term predict
+
+strategy:
+  name: "medium_term"
+  display_name: "Medium-Term Swing (5-10 Days)"
+
+  # Prediction horizons (in trading days)
+  horizon_days: [5, 10]
+  default_horizon: 5
+
+  # Label configuration — supports BOTH classification and regression
+  label_type: "classification"  # classification | regression
+  num_classes: 3                # 2 = UP/DOWN, 3 = UP/FLAT/DOWN
+  threshold: 0.02               # ±2% threshold over 5 days
+
+  # Feature modules to use
+  features:
+    - technical
+    - returns
+    - market_adaptive
+    - macro                     # Phase 4: calendar/macro features
+    - sentiment
+
+  # Model configuration
+  model:
+    type: "xgboost_classifier"
+    hyperparameters:
+      max_depth: 5              # Shallower — less overfitting on longer horizon
+      n_estimators: 400         # More trees — longer horizon has more signal
+      learning_rate: 0.03       # Slower learning — more stable
+      subsample: 0.75
+      colsample_bytree: 0.75
+      min_child_weight: 5       # Higher — need more evidence per leaf
+      gamma: 0.2
+      reg_alpha: 0.2
+      reg_lambda: 1.5           # More regularization
+      random_state: 42
+      n_jobs: -1
+      eval_metric: "mlogloss"
+
+  # Ensemble
+  ensemble:
+    enabled: true
+    models:
+      - type: "xgboost_classifier"
+        weight: 0.5
+      - type: "lightgbm_classifier"
+        weight: 0.5
+
+  # Feature lookback
+  lookback_days: 90             # Wider lookback for medium-term patterns
+
+  # Walk-forward validation
+  validation:
+    method: "walk_forward"
+    initial_train_days: 504     # ~2 years
+    test_days: 42               # ~2 months (longer test for medium-term)
+    step_days: 21               # step forward 1 month
+    min_train_samples: 400
+
+  # Data settings
+  data:
+    years_of_history: 6
+    min_data_points: 1200
+    max_missing_pct: 0.05
+
+  # Feature selection
+  feature_selection:
+    method: "importance"
+    max_features: 20            # More features — richer signal at medium term
+    min_importance: 0.005
+
+  # Market-adaptive settings for stocks (default)
+  market_adaptive:
+    weekend_effects: false
+    gap_analysis: true
+    volatility_regime: true
+    mean_reversion: true        # Mean reversion matters more at medium term
+    correlation_features: true
+    volume_spike_multiplier: 2.0

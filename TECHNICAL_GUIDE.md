@@ -1,9 +1,9 @@
-# MarketPulse — Technical Guide (Phases 1–3)
+# MarketPulse — Technical Guide (Phases 1–4)
 
-> **Version:** Phase 3 (Multi-Market + Ensemble)  
+> **Version:** Phase 4 (Multi-Strategy + Medium-Term Regression)  
 > **Updated:** February 2026
 
-This document explains every component of the Phase 1 codebase: what each file does, the exact math behind each feature and model, how the YAML configs drive the system, and how to run tests and the full pipeline.
+This document explains every component of the codebase: what each file does, the exact math behind each feature and model, how the YAML configs drive the system, and how to run tests and the full pipeline.
 
 ---
 
@@ -38,7 +38,12 @@ ML project/
 │   │   ├── futures.yaml      # Futures config
 │   │   └── indices.yaml      # Market Indices config
 │   └── strategies/
-│       └── short_term.yaml   # Short-term swing trading strategy
+│       ├── short_term.yaml           # Short-term swing trading (classification)
+│       ├── crypto_short_term.yaml    # Crypto-specific short-term
+│       ├── futures_short_term.yaml   # Futures-specific short-term
+│       ├── indices_short_term.yaml   # Indices-specific short-term
+│       ├── medium_term.yaml          # Medium-term classification (5-10 day)
+│       └── medium_term_regression.yaml  # Medium-term regression (continuous)
 │
 ├── src/
 │   ├── __init__.py
@@ -51,28 +56,49 @@ ML project/
 │   │   ├── __init__.py
 │   │   ├── technical.py      # 30+ technical indicators (pandas-ta)
 │   │   ├── returns.py        # Return-based statistical features
-│   │   └── labels.py         # Forward-looking target generation
+│   │   ├── labels.py         # Forward-looking target generation
+│   │   ├── market_adaptive.py # Market-specific adaptive features (Phase 3)
+│   │   └── macro.py          # Calendar, VIX proxy, trend context (Phase 4)
 │   ├── models/
 │   │   ├── __init__.py
-│   │   ├── xgboost_classifier.py  # XGBoost wrapper + SHAP
-│   │   ├── evaluator.py      # Metrics, reports, visualizations
-│   │   └── trainer.py        # Full training pipeline orchestrator
+│   │   ├── xgboost_classifier.py   # XGBoost classifier + SHAP
+│   │   ├── lightgbm_classifier.py  # LightGBM classifier (Phase 3)
+│   │   ├── xgboost_regressor.py    # XGBoost regressor + SHAP (Phase 4)
+│   │   ├── lightgbm_regressor.py   # LightGBM regressor (Phase 4)
+│   │   ├── ensemble.py             # Weighted soft-voting ensemble (Phase 3+4)
+│   │   ├── evaluator.py            # Classification metrics & reports
+│   │   ├── regression_evaluator.py # Regression metrics & reports (Phase 4)
+│   │   └── trainer.py              # Full training pipeline orchestrator
 │   ├── analysis/
 │   │   ├── __init__.py
-│   │   └── clustering.py     # K-Means / DBSCAN stock clustering
+│   │   ├── clustering.py     # K-Means / DBSCAN stock clustering
+│   │   └── regime.py         # Market regime detection (Phase 3)
 │   └── utils/
 │       ├── __init__.py
 │       └── validation.py     # Walk-forward time-series cross-validation
 │
 ├── app/
-│   └── streamlit_app.py      # Interactive dashboard
+│   └── streamlit_app.py      # Interactive dashboard (Phases 1-4 integrated)
+│
+├── notebooks/
+│   ├── 01_data_exploration.ipynb
+│   ├── 02_feature_engineering.ipynb
+│   ├── 03_model_training.ipynb
+│   ├── 04_clustering.ipynb
+│   ├── 05_sentiment_analysis.ipynb
+│   ├── 06_multi_market.ipynb
+│   ├── 07_ensemble_regime.ipynb
+│   └── 08_multi_strategy.ipynb      # Phase 4 notebook
 │
 ├── tests/
 │   ├── __init__.py
 │   ├── test_fetcher.py       # Config + fetcher tests (17 tests)
 │   ├── test_features.py      # Technical + return feature tests (15 tests)
 │   ├── test_labels.py        # Label generation + anti-leakage tests (11 tests)
-│   └── test_validation.py    # Walk-forward validation tests (12 tests)
+│   ├── test_validation.py    # Walk-forward validation tests (12 tests)
+│   ├── test_sentiment.py     # Sentiment pipeline tests (Phase 2)
+│   ├── test_phase3.py        # Multi-market + ensemble tests (37 tests)
+│   └── test_phase4.py        # Multi-strategy + regression tests (31 tests)
 │
 ├── requirements.txt          # All Python dependencies
 └── README.md                 # Project overview
@@ -86,10 +112,18 @@ The system follows a **pipeline architecture** where data flows linearly through
 
 ```
 YAML Configs ──→ Data Fetcher ──→ Preprocessor ──→ Feature Engine ──→ Label Generator
-                                                                          │
-              ┌────────────────────────────────────────────────────────────┘
-              ▼
-     Walk-Forward Splitter ──→ XGBoost (per fold) ──→ Evaluator ──→ Report
+                                                        │                     │
+                                     Technical + Returns │          Classification
+                                     Market-Adaptive     │          or Regression
+                                     Macro Features      │                    │
+              ┌───────────────────────────────────────────┘                    │
+              ▼                                                               │
+     Regime Detection ──→ Walk-Forward Splitter ──→ Ensemble/Model ──→ Evaluate
+                              │                        │
+                         Classification          Regression
+                         (3-class)              (continuous)
+                            │                       │
+                        Evaluator          RegressionEvaluator
 ```
 
 **Key architectural decisions:**
@@ -1150,15 +1184,18 @@ The trainer (`src/models/trainer.py`) now supports:
 3. Automatic regime detection for all runs
 4. Per-market strategy configs: `python -m src.models.trainer --market crypto --strategy crypto_short_term`
 
-### Pipeline Flow (Phase 3)
+### Pipeline Flow (Phase 3+4)
 
 ```
 Fetch → Preprocess → Technical Features → Return Features
     → Market-Adaptive Features (per market type)
+    → Macro Features (calendar, VIX proxy, trend context)
     → Regime Detection
-    → Labels → Walk-Forward Validation
+    → Labels (classification OR regression)
+    → Walk-Forward Validation
         → Ensemble(XGBoost + LightGBM) or Single Model
-        → Evaluate per fold → Aggregate Report
+        → Classification Evaluator OR Regression Evaluator
+        → Aggregate Report
 ```
 
 ---
@@ -1180,3 +1217,151 @@ Phase 3 adds 37 new tests (127 total):
 | `TestRegimeDetector` | 7 | Columns, values, bounds, summary, transitions |
 | `TestLGBClassifier` | 5 | Fit/predict, proba, importance, binary |
 | `TestEnsemble` | 6 | Fit/predict, agreement, individual preds, fallback |
+
+---
+
+## Phase 4: Multi-Strategy (Medium-Term Regression)
+
+Phase 4 extends MarketPulse from a classification-only system to a **multi-strategy platform** supporting both classification and regression, with macro/calendar features and a fully integrated dashboard.
+
+### 4.1 Macro Features (`src/features/macro.py`)
+
+Three feature families (~30 features total):
+
+#### Calendar Features (`compute_calendar_features`)
+| Feature | Formula / Logic |
+|---|---|
+| `cal_day_of_week` | `dayofweek / 4` (normalized 0-1) |
+| `cal_month_sin` | `sin(2π · month / 12)` |
+| `cal_month_cos` | `cos(2π · month / 12)` |
+| `cal_quarter` | `quarter / 4` |
+| `cal_month_end` | Binary: last business day of month |
+| `cal_quarter_end` | Binary: last business day of quarter |
+| `cal_year_end` | Binary: last 5 business days of year |
+| `cal_january` | Binary: January effect indicator |
+| `cal_opex_week` | Binary: options expiry week (3rd Friday ±2 days) |
+| `cal_is_monday` | Binary: Monday effect |
+| `cal_is_friday` | Binary: Friday effect |
+
+#### VIX Proxy Features (`compute_vix_proxy_features`)
+Derived from the asset's own price history (no external VIX data needed):
+
+| Feature | Formula |
+|---|---|
+| `vix_proxy_5d/10d/20d` | `std(log_returns, window) × √252 × 100` |
+| `vix_term_structure` | `vix_proxy_5d / vix_proxy_20d` (mean-reversion signal) |
+| `vix_percentile` | Expanding percentile rank of 20d vol |
+| `vix_spike` | Binary: `vix_proxy_5d > 1.5 × vix_proxy_20d` |
+| `vix_high_fear` | Binary: `vix_percentile > 0.8` |
+| `vix_low_fear` | Binary: `vix_percentile < 0.2` |
+
+#### Trend Context Features (`compute_trend_context_features`)
+| Feature | Formula |
+|---|---|
+| `dist_ma_50d/100d/200d` | `(Close - MA) / MA` (distance from moving average) |
+| `golden_cross` | Binary: 50d MA > 200d MA |
+| `cum_return_20d/60d/120d` | Cumulative log return over window |
+| `drawdown` | `(Close - cummax) / cummax` |
+| `drawdown_recovery` | Binary: current drawdown > -1% (recovering) |
+| `higher_high_20d` | Binary: Close > 20d rolling max |
+| `lower_low_20d` | Binary: Close < 20d rolling min |
+
+### 4.2 XGBoost Regressor (`src/models/xgboost_regressor.py`)
+
+`MarketPulseXGBRegressor` wraps `xgboost.XGBRegressor` with the same API as the classifier:
+
+- **Objective:** `reg:squarederror`
+- **`from_strategy_config(cfg)`**: Builds from YAML (max_depth, n_estimators, learning_rate, reg_lambda, etc.)
+- **`predict_proba(X)`**: Returns `(n, 1)` array (raw predictions) for ensemble API compatibility
+- **`get_shap_values(X)`**: SHAP TreeExplainer for feature attribution
+- **`get_feature_importance()`**: Built-in XGBoost gain-based importance
+
+### 4.3 LightGBM Regressor (`src/models/lightgbm_regressor.py`)
+
+`MarketPulseLGBRegressor` wraps `lightgbm.LGBMRegressor`:
+
+- **Objective:** `regression` (MSE)
+- **`fit(**kwargs)`**: Gracefully ignores `balance_classes` kwarg (classification-only parameter)
+- Same API surface as XGBoost regressor
+
+### 4.4 Regression Evaluator (`src/models/regression_evaluator.py`)
+
+`RegressionEvaluator` mirrors the classification `Evaluator` but for continuous targets:
+
+| Metric | Formula |
+|---|---|
+| MAE | `mean(\|y_true - y_pred\|)` |
+| RMSE | `√(mean((y_true - y_pred)²))` |
+| R² | `1 - SS_res / SS_tot` |
+| Directional Accuracy | `mean(sign(y_true) == sign(y_pred))` |
+| Information Coefficient | Spearman rank correlation between predictions and actuals |
+
+**Dataclasses:** `RegressionFoldResult` (per-fold) and `RegressionReport` (aggregated).
+
+### 4.5 Ensemble Regression Support
+
+The `MarketPulseEnsemble` (Phase 3) now auto-detects regression mode:
+
+```python
+self._is_regression = any(
+    name in ("xgboost_regressor", "lightgbm_regressor")
+    for name, _ in self.model_weights
+)
+```
+
+- **Classification mode**: Weighted soft-voting via `predict_proba()` → `argmax`
+- **Regression mode**: Weighted average of raw predictions → continuous output
+- `predict_proba()` returns `(n, 1)` in regression mode
+
+### 4.6 Strategy Configs
+
+#### `medium_term.yaml` (Classification)
+- **Horizon:** 5-10 days (vs 3d for short_term)
+- **Threshold:** ±2% (larger moves for medium-term)
+- **Features:** technical + returns + market_adaptive + macro + sentiment
+- **Ensemble:** XGBoost + LightGBM classifiers (50/50)
+- **max_depth:** 5, **n_estimators:** 400, **learning_rate:** 0.03
+- **mean_reversion:** true (trend context features enabled)
+
+#### `medium_term_regression.yaml` (Regression)
+- **label_type:** `regression` (continuous 5-day forward return)
+- **Model:** xgboost_regressor (primary)
+- **Ensemble:** xgboost_regressor + lightgbm_regressor (50/50)
+- **reg_lambda:** 2.0 (stronger regularization for regression)
+- **years_of_history:** 6, **max_features:** 25
+
+### 4.7 Dashboard Integration
+
+The Streamlit dashboard (`app/streamlit_app.py`) was fully rewritten to integrate all Phase 3+4 features:
+
+- **Strategy selector**: Choose between all available strategies per market
+- **Ensemble toggle**: Enable/disable weighted soft-voting
+- **Enriched data pipeline**: Technical → Returns → Adaptive → Regime → Macro
+- **Regime overlay**: Visual regime detection on price charts
+- **Regression view**: Predicted vs actual scatter plots, directional accuracy per fold, full regression metrics
+- **4-column prediction display**: Prediction, confidence %, horizon, agreement score
+
+### 4.8 Pipeline Updates
+
+The trainer (`src/models/trainer.py`) now:
+1. Computes macro features when `macro` is in the strategy's feature list
+2. Supports `label_type: regression` for continuous target generation
+3. Uses `RegressionEvaluator` when in regression mode
+4. Passes macro features through `predict_latest()` for live predictions
+
+---
+
+## Phase 4 Test Coverage
+
+Phase 4 adds 31 new tests (158 total):
+
+| Test Class | Tests | Covers |
+|---|---|---|
+| `TestMacroFeatures` | 6 | Calendar, VIX proxy, trend context, full pipeline, names, NaN tail |
+| `TestXGBRegressor` | 5 | Fit/predict, proba shape, importance, config, SHAP |
+| `TestLGBRegressor` | 4 | Fit/predict, proba shape, importance, config |
+| `TestRegressionEvaluator` | 5 | Fold eval, directional accuracy, IC, aggregation, report |
+| `TestEnsembleRegression` | 6 | Regression detect, classification detect, fit/predict, proba, importance, classification compat |
+| `TestStrategyConfigs` | 2 | medium_term loads, medium_term_regression loads |
+| `TestInitExports` | 2 | Models __init__, features __init__ |
+| `TestDashboardImports` | 1 | All dashboard imports resolve |
