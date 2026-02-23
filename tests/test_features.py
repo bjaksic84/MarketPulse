@@ -89,7 +89,7 @@ class TestTechnicalIndicators:
         df = _make_sample_ohlcv(300)
         result = compute_technical_indicators(df)
         assert "sma_cross_20_50" in result.columns
-        assert "dist_sma_20" in result.columns
+        assert "dist_sma_20_pct" in result.columns
         assert "rsi_oversold" in result.columns
         assert "close_position" in result.columns
 

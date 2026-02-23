@@ -7,7 +7,7 @@ Features must NEVER include label columns.
 """
 
 import logging
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -20,7 +20,7 @@ def generate_labels(
     horizon: int = 1,
     label_type: str = "classification",
     num_classes: int = 3,
-    threshold: float = 0.01,
+    threshold: Union[float, str] = 0.01,
 ) -> pd.DataFrame:
     """Generate prediction labels (targets) from price data.
 
@@ -36,9 +36,12 @@ def generate_labels(
         For classification:
         - 2: UP (>=0%) / DOWN (<0%)
         - 3: UP (>threshold) / FLAT / DOWN (<-threshold)
-    threshold : float
-        Threshold for the FLAT zone when num_classes=3.
-        Default 0.01 = ±1%.
+    threshold : float or str
+        For 3-class classification:
+        - float: Fixed threshold for the FLAT zone (e.g. 0.01 = ±1%).
+        - "adaptive": Compute per-ticker thresholds from percentiles
+          of the actual return distribution (p33/p67) to guarantee
+          balanced classes (~33% each).
 
     Returns
     -------
@@ -73,9 +76,13 @@ def generate_labels(
         if len(valid) > 0:
             if label_type == "classification":
                 dist = df["label_name"].value_counts(normalize=True)
+                thresh_str = (
+                    "adaptive" if isinstance(threshold, str)
+                    else f"{threshold:.1%}"
+                )
                 logger.info(
                     f"Label distribution (horizon={horizon}d, "
-                    f"threshold={threshold:.1%}):\n{dist.to_string()}"
+                    f"threshold={thresh_str}):\n{dist.to_string()}"
                 )
             else:
                 logger.info(
@@ -91,7 +98,7 @@ def _generate_classification_labels(
     df: pd.DataFrame,
     fwd_col: str,
     num_classes: int,
-    threshold: float,
+    threshold: Union[float, str],
 ) -> pd.DataFrame:
     """Generate classification labels from forward returns."""
 
@@ -101,13 +108,37 @@ def _generate_classification_labels(
         df["label_name"] = np.where(df[fwd_col] >= 0, "UP", "DOWN")
 
     elif num_classes == 3:
-        # Ternary: UP (> threshold), FLAT (within threshold), DOWN (< -threshold)
-        conditions = [
-            df[fwd_col] > threshold,
-            df[fwd_col] < -threshold,
-        ]
-        choices_num = [2, 0]      # 0=DOWN, 1=FLAT, 2=UP
-        choices_name = ["UP", "DOWN"]
+        if isinstance(threshold, str) and threshold.lower() == "adaptive":
+            # Adaptive: use percentile-based thresholds for balanced classes.
+            # IMPORTANT: We compute thresholds from only the first 70% of
+            # data to avoid look-ahead bias (the test set's return
+            # distribution shouldn't influence the threshold definition).
+            fwd_returns = df[fwd_col].dropna()
+            n_threshold_window = int(len(fwd_returns) * 0.70)
+            threshold_data = fwd_returns.iloc[:n_threshold_window]
+            p33 = threshold_data.quantile(0.333)
+            p67 = threshold_data.quantile(0.667)
+
+            logger.info(
+                f"Adaptive thresholds: p33={p33:.4f} ({p33:.2%}), "
+                f"p67={p67:.4f} ({p67:.2%})"
+            )
+
+            conditions = [
+                df[fwd_col] > p67,
+                df[fwd_col] < p33,
+            ]
+            choices_num = [2, 0]      # 0=DOWN, 1=FLAT, 2=UP
+            choices_name = ["UP", "DOWN"]
+        else:
+            # Fixed symmetric threshold: ±threshold
+            threshold = float(threshold)
+            conditions = [
+                df[fwd_col] > threshold,
+                df[fwd_col] < -threshold,
+            ]
+            choices_num = [2, 0]      # 0=DOWN, 1=FLAT, 2=UP
+            choices_name = ["UP", "DOWN"]
 
         df["label"] = np.select(conditions, choices_num, default=1)
         df["label_name"] = np.select(conditions, choices_name, default="FLAT")
@@ -164,9 +195,25 @@ def get_clean_features_and_labels(
         (X, y) — feature matrix and label vector with aligned indices.
     """
     # Columns that are NEVER features
+    # 1. Target / label columns
+    # 2. Raw OHLCV (price-level, non-stationary)
+    # 3. Non-stationary derived columns (raw MAs, BB bands, ATR, OBV)
+    #    These scale with price level and cause severe overfitting
+    #    in walk-forward validation. Only their NORMALIZED versions
+    #    (dist_sma_*, bb_width, bb_pct, atr_pct, obv_roc_*) are kept.
     exclude_cols = {
+        # Targets
         "label", "label_name", "regime_label",
+        # Raw OHLCV
         "open", "high", "low", "close", "volume", "adj_close",
+        # Non-stationary price-level features
+        "sma_20", "sma_50", "sma_200",
+        "ema_12", "ema_26",
+        "bb_lower", "bb_mid", "bb_upper",
+        "atr_14",
+        "obv",
+        # Raw MACD values (keep normalized macd_pct, macd_hist_pct instead)
+        "macd", "macd_hist", "macd_signal",
     }
     # Also exclude any forward return columns
     exclude_cols.update(

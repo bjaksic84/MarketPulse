@@ -1,20 +1,18 @@
-# Indices Short-Term Strategy Configuration
-# Tailored for broad market indices (S&P 500, Dow, Nasdaq, etc.)
+# Indices Medium-Term Strategy Configuration
+# Predicts 5-10 day price direction for broad market indices
 #
-# Key differences from stocks:
-# - Lower FLAT threshold (±0.5%) — indices are diversified, move less than single stocks
-# - Mean-reversion bias — indices tend to revert to trend
-# - VIX integration — volatility index as a direct feature
-# - Breadth features — how many components are rising/falling
+# Key advantages of indices at medium-term:
+# - Mean-reversion patterns are strongest at 5-10 day horizons
+# - Macro features (calendar, VIX, trend context) align with index drivers
+# - Less noise than individual stocks — diversification effect
 
 strategy:
-  name: "indices_short_term"
-  display_name: "Index Short-Term (1-5 Days)"
+  name: "indices_medium_term"
+  display_name: "Index Medium-Term Swing (5-10 Days)"
 
-  horizon_days: [1, 3, 5]
-  default_horizon: 3
+  horizon_days: [5, 10]
+  default_horizon: 5
 
-  # Binary classification (more tractable)
   label_type: "classification"
   num_classes: 2
   threshold: 0.0
@@ -26,7 +24,7 @@ strategy:
     - macro
     - sentiment
 
-  # Model — strong regularization to prevent overfitting
+  # Model — conservative hyperparameters
   model:
     type: "xgboost_classifier"
     hyperparameters:
@@ -51,33 +49,32 @@ strategy:
       - type: "lightgbm_classifier"
         weight: 0.3
 
-  lookback_days: 60
+  lookback_days: 90
 
-  # Standard walk-forward
   validation:
     method: "walk_forward"
     initial_train_days: 504
-    test_days: 42                # ~2 months
+    test_days: 42
     step_days: 21
     min_train_samples: 400
 
   data:
-    years_of_history: 5
-    min_data_points: 1000
+    years_of_history: 6
+    min_data_points: 1200
     max_missing_pct: 0.03
 
   feature_selection:
     method: "importance"
-    max_features: 8              # Fewer features to reduce overfitting
+    max_features: 8
     corr_threshold: 0.85
     min_importance: 0.005
 
   # Index-specific adaptive features
   market_adaptive:
     weekend_effects: false
-    gap_analysis: true           # Monday gap effects on indices
-    volatility_regime: true      # VIX regime detection
-    mean_reversion: true         # Indices mean-revert more than stocks
+    gap_analysis: true
+    volatility_regime: true
+    mean_reversion: true         # Indices mean-revert strongly at medium-term
     correlation_features: true
     volume_spike_multiplier: 2.0
 

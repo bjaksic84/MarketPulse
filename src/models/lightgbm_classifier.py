@@ -32,15 +32,15 @@ class MarketPulseLGBClassifier:
     """
 
     DEFAULT_PARAMS = {
-        "max_depth": 6,
-        "n_estimators": 300,
-        "learning_rate": 0.05,
-        "subsample": 0.8,
-        "colsample_bytree": 0.8,
-        "min_child_weight": 3,
-        "reg_alpha": 0.1,
-        "reg_lambda": 1.0,
-        "num_leaves": 31,
+        "max_depth": 4,
+        "n_estimators": 200,
+        "learning_rate": 0.03,
+        "subsample": 0.7,
+        "colsample_bytree": 0.6,
+        "min_child_weight": 10,
+        "reg_alpha": 0.5,
+        "reg_lambda": 3.0,
+        "num_leaves": 15,
         "random_state": 42,
         "n_jobs": -1,
         "verbosity": -1,
@@ -50,8 +50,11 @@ class MarketPulseLGBClassifier:
         self,
         hyperparameters: Optional[Dict] = None,
         num_classes: int = 3,
+        calibrate_threshold: bool = True,
     ):
         self.num_classes = num_classes
+        self.calibrate_threshold = calibrate_threshold
+        self.optimal_threshold = 0.5
         self.hyperparameters = {**self.DEFAULT_PARAMS}
         if hyperparameters:
             self.hyperparameters.update(hyperparameters)
@@ -111,17 +114,58 @@ class MarketPulseLGBClassifier:
 
         self.model.fit(**fit_params)
 
+        # Calibrate prediction threshold
+        if self.calibrate_threshold and self.num_classes == 2:
+            self._calibrate_threshold(X_train, y_train)
+
         logger.info(
             f"Trained LightGBM: {len(X_train)} samples, "
             f"{len(self.feature_names)} features, "
             f"{self.num_classes} classes"
+            f"{f', threshold={self.optimal_threshold:.2f}' if self.num_classes == 2 else ''}"
         )
         return self
 
+    def _calibrate_threshold(
+        self,
+        X_train: pd.DataFrame,
+        y_train: pd.Series,
+        val_fraction: float = 0.15,
+        min_val_size: int = 42,
+    ):
+        """Find the optimal probability threshold on a held-out validation split."""
+        n = len(X_train)
+        val_size = max(min_val_size, int(n * val_fraction))
+        if val_size >= n - 50:
+            return
+
+        X_val = X_train.iloc[-val_size:]
+        y_val = y_train.iloc[-val_size:].astype(int)
+
+        proba = self.model.predict_proba(X_val)[:, 1]
+
+        best_t, best_acc = 0.5, 0.0
+        for t in np.arange(0.30, 0.70, 0.02):
+            preds = (proba >= t).astype(int)
+            acc = (preds == y_val.values).mean()
+            if acc > best_acc:
+                best_acc = acc
+                best_t = t
+
+        self.optimal_threshold = best_t
+        logger.debug(f"Calibrated threshold: {best_t:.2f} (val acc: {best_acc:.3f})")
+
     def predict(self, X: pd.DataFrame) -> np.ndarray:
-        """Predict class labels."""
+        """Predict class labels.
+
+        For binary classification with a calibrated threshold, the label is
+        determined by comparing P(class=1) against self.optimal_threshold.
+        """
         if self.model is None:
             raise RuntimeError("Model not trained. Call fit() first.")
+        if self.num_classes == 2 and self.optimal_threshold != 0.5:
+            proba = self.model.predict_proba(X)[:, 1]
+            return (proba >= self.optimal_threshold).astype(int)
         return self.model.predict(X)
 
     def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
@@ -160,4 +204,8 @@ class MarketPulseLGBClassifier:
             if k in valid_keys:
                 lgb_params[k] = v
 
-        return cls(hyperparameters=lgb_params, num_classes=num_classes)
+        return cls(
+            hyperparameters=lgb_params,
+            num_classes=num_classes,
+            calibrate_threshold=False,  # ensemble handles calibration
+        )

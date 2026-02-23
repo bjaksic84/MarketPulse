@@ -78,15 +78,15 @@ def regression_xy(enriched_df):
 
 @pytest.fixture
 def classification_xy(enriched_df):
-    """Clean features + classification labels (5-day, 3-class)."""
+    """Clean features + classification labels (5-day, 2-class)."""
     from src.features.labels import generate_labels, get_clean_features_and_labels
 
     labeled = generate_labels(
         enriched_df,
         horizon=5,
         label_type="classification",
-        num_classes=3,
-        threshold=0.02,
+        num_classes=2,
+        threshold=0.0,
     )
     X, y = get_clean_features_and_labels(labeled)
     return X, y
@@ -471,7 +471,7 @@ class TestStrategyConfigs:
         cfg = load_strategy_config("medium_term")
         assert cfg["name"] == "medium_term"
         assert cfg["label_type"] == "classification"
-        assert cfg["threshold"] == 0.02
+        assert cfg["threshold"] == 0.0
         assert 5 in cfg["horizon_days"]
         assert 10 in cfg["horizon_days"]
         assert "macro" in cfg["features"]

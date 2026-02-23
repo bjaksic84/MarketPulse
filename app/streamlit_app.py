@@ -63,10 +63,8 @@ st.set_page_config(
 # ──────────────────── Strategy Mapping ────────────────────
 
 MARKET_STRATEGY_MAP = {
-    "stocks": "short_term",
-    "crypto": "crypto_short_term",
-    "futures": "futures_short_term",
     "indices": "indices_short_term",
+    "stocks": "short_term",
 }
 
 
@@ -156,24 +154,46 @@ def render_sidebar():
         num_classes = st.sidebar.radio(
             "Classification Mode",
             [2, 3],
-            index=1,
+            index=0,
             format_func=lambda x: (
                 "Binary (UP/DOWN)" if x == 2 else "Ternary (UP/FLAT/DOWN)"
             ),
         )
 
         threshold_default = strategy_config.get("threshold", 0.01)
-        threshold = st.sidebar.slider(
-            "FLAT Zone Threshold (%)",
-            min_value=0.5,
-            max_value=5.0,
-            value=threshold_default * 100,
-            step=0.25,
-            disabled=(num_classes == 2),
-        )
+        is_adaptive = isinstance(threshold_default, str) and threshold_default.lower() == "adaptive"
+
+        if is_adaptive:
+            use_adaptive_threshold = st.sidebar.checkbox(
+                "Adaptive Threshold (balanced classes)",
+                value=True,
+                help="Compute per-ticker thresholds from return percentiles for balanced UP/FLAT/DOWN classes",
+            )
+            if use_adaptive_threshold:
+                threshold = "adaptive"
+            else:
+                # Fallback: manual slider
+                threshold = st.sidebar.slider(
+                    "FLAT Zone Threshold (%)",
+                    min_value=0.5,
+                    max_value=5.0,
+                    value=1.0,
+                    step=0.25,
+                    disabled=(num_classes == 2),
+                )
+                threshold = threshold / 100
+        else:
+            threshold = st.sidebar.slider(
+                "FLAT Zone Threshold (%)",
+                min_value=0.5,
+                max_value=5.0,
+                value=float(threshold_default) * 100,
+                step=0.25,
+                disabled=(num_classes == 2),
+            )
     else:
-        num_classes = 3
-        threshold = 1.0
+        num_classes = 2
+        threshold = 0.0
 
     # Model mode
     st.sidebar.divider()
@@ -200,7 +220,7 @@ def render_sidebar():
         "end_date": end_date.strftime("%Y-%m-%d"),
         "horizon": horizon,
         "num_classes": num_classes,
-        "threshold": threshold / 100,
+        "threshold": threshold if threshold == "adaptive" else threshold / 100,
         "label_type": label_type,
         "use_ensemble": use_ensemble,
         "view": view,
@@ -240,8 +260,10 @@ def load_enriched_data(
     # Phase 3: regime detection
     df = detect_regime(df, market_name=market_name)
 
-    # Phase 4: macro features
-    df = compute_macro_features(df, strategy_config=strategy_config)
+    # Phase 4: macro features (only if strategy uses them)
+    strategy_features = strategy_config.get("features", [])
+    if "macro" in strategy_features:
+        df = compute_macro_features(df, strategy_config=strategy_config)
 
     return df
 
@@ -434,6 +456,24 @@ def render_prediction(params):
         st.warning(f"Insufficient data ({len(X)} samples). Need at least 600.")
         return
 
+    # Feature selection (same as model performance view)
+    strategy = params["strategy_config"]
+    fs_cfg = strategy.get("feature_selection", {})
+    fs_method = fs_cfg.get("method", "none")
+    if fs_method != "none":
+        from src.features.feature_selection import select_features_pipeline
+        max_features = fs_cfg.get("max_features", 15)
+        corr_threshold = fs_cfg.get("corr_threshold", 0.90)
+        val_init = strategy.get("validation", {}).get("initial_train_days", 504)
+        n_select = min(val_init, len(X))
+        selected_features, _ = select_features_pipeline(
+            X.iloc[:n_select], y.iloc[:n_select],
+            max_features=max_features,
+            corr_threshold=corr_threshold,
+            method=fs_method,
+        )
+        X = X[selected_features]
+
     # Train on all but last 21 days
     train_end = len(X) - 21
     X_train, y_train = X.iloc[:train_end], y.iloc[:train_end]
@@ -563,6 +603,24 @@ def render_model_performance(params):
 
     # Use strategy-specific validation settings
     strategy = params["strategy_config"]
+
+    # Feature selection (reduces overfitting from too many features)
+    fs_cfg = strategy.get("feature_selection", {})
+    fs_method = fs_cfg.get("method", "none")
+    if fs_method != "none":
+        from src.features.feature_selection import select_features_pipeline
+        max_features = fs_cfg.get("max_features", 15)
+        corr_threshold = fs_cfg.get("corr_threshold", 0.90)
+        val_init = strategy.get("validation", {}).get("initial_train_days", 504)
+        n_select = min(val_init, len(X))
+        selected_features, _ = select_features_pipeline(
+            X.iloc[:n_select], y.iloc[:n_select],
+            max_features=max_features,
+            corr_threshold=corr_threshold,
+            method=fs_method,
+        )
+        X = X[selected_features]
+
     val_cfg = strategy.get("validation", {})
     validator = WalkForwardValidator(
         initial_train_days=val_cfg.get("initial_train_days", 504),

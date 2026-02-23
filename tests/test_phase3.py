@@ -40,7 +40,7 @@ def sample_ohlcv():
 
 @pytest.fixture
 def sample_ohlcv_with_dates():
-    """Generate data spanning weekends for crypto tests."""
+    """Generate data spanning weekends for date-based tests."""
     np.random.seed(123)
     n = 365
     dates = pd.date_range(end=datetime.now(), periods=n, freq="D")  # include weekends
@@ -154,42 +154,6 @@ class TestVolumeSpike:
         assert df_low["volume_spike"].sum() >= df_high["volume_spike"].sum()
 
 
-class TestCryptoFeatures:
-    def test_adds_columns(self, sample_ohlcv_with_dates):
-        from src.features.market_adaptive import compute_crypto_features
-
-        df = compute_crypto_features(sample_ohlcv_with_dates.copy())
-        assert "is_weekend" in df.columns
-        assert "day_of_week" in df.columns
-        assert "extreme_up" in df.columns
-
-    def test_weekend_detection(self, sample_ohlcv_with_dates):
-        from src.features.market_adaptive import compute_crypto_features
-
-        df = compute_crypto_features(sample_ohlcv_with_dates.copy())
-        # Should have weekends since we used freq='D'
-        assert df["is_weekend"].sum() > 0
-        assert df["day_of_week"].max() == 1.0
-        assert df["day_of_week"].min() == 0.0
-
-
-class TestFuturesFeatures:
-    def test_adds_columns(self, sample_ohlcv):
-        from src.features.market_adaptive import compute_futures_features
-
-        df = compute_futures_features(sample_ohlcv.copy())
-        assert "is_monday" in df.columns
-        assert "is_friday" in df.columns
-        assert "is_month_end_week" in df.columns
-        assert "momentum_streak" in df.columns
-
-    def test_streak_nonzero(self, sample_ohlcv):
-        from src.features.market_adaptive import compute_futures_features
-
-        df = compute_futures_features(sample_ohlcv.copy())
-        assert df["momentum_streak"].dropna().abs().max() > 0
-
-
 class TestIndexFeatures:
     def test_adds_columns(self, sample_ohlcv):
         from src.features.market_adaptive import compute_index_features
@@ -217,18 +181,6 @@ class TestAdaptiveDispatcher:
         df = compute_market_adaptive_features(sample_ohlcv.copy(), "stocks", strategy_config)
         assert df.shape[1] > n_before
 
-    def test_crypto(self, sample_ohlcv_with_dates, strategy_config):
-        from src.features.market_adaptive import compute_market_adaptive_features
-
-        df = compute_market_adaptive_features(sample_ohlcv_with_dates.copy(), "crypto", strategy_config)
-        assert "is_weekend" in df.columns
-
-    def test_futures(self, sample_ohlcv, strategy_config):
-        from src.features.market_adaptive import compute_market_adaptive_features
-
-        df = compute_market_adaptive_features(sample_ohlcv.copy(), "futures", strategy_config)
-        assert "is_monday" in df.columns
-
     def test_indices(self, sample_ohlcv, strategy_config):
         from src.features.market_adaptive import compute_market_adaptive_features
 
@@ -238,7 +190,7 @@ class TestAdaptiveDispatcher:
     def test_feature_name_listing(self):
         from src.features.market_adaptive import get_adaptive_feature_names
 
-        for market in ["stocks", "crypto", "futures", "indices"]:
+        for market in ["stocks", "indices"]:
             names = get_adaptive_feature_names(market)
             assert len(names) > 0
             assert isinstance(names, list)
@@ -257,9 +209,6 @@ class TestRegimeConfig:
 
     def test_per_market(self):
         from src.analysis.regime import RegimeConfig
-
-        crypto = RegimeConfig.for_market("crypto")
-        assert crypto.trend_short_window == 10
 
         indices = RegimeConfig.for_market("indices")
         assert indices.smooth_window == 7
@@ -293,7 +242,7 @@ class TestRegimeDetector:
     def test_different_markets(self, sample_ohlcv):
         from src.analysis.regime import detect_regime
 
-        for market in ["stocks", "crypto", "futures", "indices"]:
+        for market in ["stocks", "indices"]:
             df = detect_regime(sample_ohlcv.copy(), market_name=market)
             assert "regime" in df.columns
 

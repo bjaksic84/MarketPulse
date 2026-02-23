@@ -64,20 +64,6 @@ class RegimeConfig:
     def for_market(cls, market_name: str) -> "RegimeConfig":
         """Return sensible defaults per market type."""
         configs = {
-            "crypto": cls(
-                trend_short_window=10,
-                trend_long_window=30,
-                vol_window=10,
-                vol_long_window=30,
-                smooth_window=3,
-            ),
-            "futures": cls(
-                trend_short_window=15,
-                trend_long_window=40,
-                vol_window=15,
-                vol_long_window=50,
-                smooth_window=5,
-            ),
             "indices": cls(
                 trend_short_window=20,
                 trend_long_window=50,

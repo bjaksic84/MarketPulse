@@ -72,25 +72,51 @@ def compute_technical_indicators(
 
 
 def _add_trend_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    """Trend indicators: SMA, EMA, MACD, ADX."""
+    """Trend indicators: normalized SMA/EMA distances, MACD, ADX.
 
-    # Simple Moving Averages
-    df["sma_20"] = ta.sma(df["close"], length=20)
-    df["sma_50"] = ta.sma(df["close"], length=50)
-    df["sma_200"] = ta.sma(df["close"], length=200)
+    IMPORTANT: Raw SMA/EMA values are non-stationary (they scale with
+    price level) and cause severe overfitting in walk-forward validation.
+    We compute them internally but only expose NORMALIZED versions as
+    features (distances from price as % of price).
+    """
 
-    # Exponential Moving Averages
-    df["ema_12"] = ta.ema(df["close"], length=12)
-    df["ema_26"] = ta.ema(df["close"], length=26)
+    # Compute raw SMAs internally (used for cross signals & normalization)
+    sma_20 = ta.sma(df["close"], length=20)
+    sma_50 = ta.sma(df["close"], length=50)
+    sma_200 = ta.sma(df["close"], length=200)
 
-    # MACD (12, 26, 9)
+    # Store as internal columns for use by custom features,
+    # but these will be excluded from the model features
+    df["sma_20"] = sma_20
+    df["sma_50"] = sma_50
+    df["sma_200"] = sma_200
+
+    # NORMALIZED distance features (stationary — suitable for ML)
+    df["dist_sma_20_pct"] = (df["close"] - sma_20) / sma_20.replace(0, np.nan)
+    df["dist_sma_50_pct"] = (df["close"] - sma_50) / sma_50.replace(0, np.nan)
+    df["dist_sma_200_pct"] = (df["close"] - sma_200) / sma_200.replace(0, np.nan)
+
+    # Compute raw EMAs internally
+    ema_12 = ta.ema(df["close"], length=12)
+    ema_26 = ta.ema(df["close"], length=26)
+    df["ema_12"] = ema_12
+    df["ema_26"] = ema_26
+
+    # Normalized EMA distance
+    df["dist_ema_12_pct"] = (df["close"] - ema_12) / ema_12.replace(0, np.nan)
+    df["dist_ema_26_pct"] = (df["close"] - ema_26) / ema_26.replace(0, np.nan)
+
+    # MACD (12, 26, 9) — already a difference, but normalize by price
     macd = ta.macd(df["close"], fast=12, slow=26, signal=9)
     if macd is not None and not macd.empty:
         df["macd"] = macd.iloc[:, 0]         # MACD line
         df["macd_hist"] = macd.iloc[:, 1]    # MACD histogram
         df["macd_signal"] = macd.iloc[:, 2]  # Signal line
+        # Normalized MACD (as % of price — comparable across price levels)
+        df["macd_pct"] = macd.iloc[:, 0] / df["close"]
+        df["macd_hist_pct"] = macd.iloc[:, 1] / df["close"]
 
-    # ADX (Average Directional Index) — trend strength
+    # ADX (Average Directional Index) — trend strength (already stationary)
     adx = ta.adx(df["high"], df["low"], df["close"], length=14)
     if adx is not None and not adx.empty:
         df["adx"] = adx.iloc[:, 0]   # ADX
@@ -122,40 +148,59 @@ def _add_momentum_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _add_volatility_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    """Volatility indicators: Bollinger Bands, ATR, Keltner Channels."""
+    """Volatility indicators: Bollinger Bands, ATR.
+
+    Only NORMALIZED/RELATIVE features are kept for modeling.
+    Raw BB bands and ATR are non-stationary and excluded.
+    """
 
     # Bollinger Bands (20, 2)
     bbands = ta.bbands(df["close"], length=20, std=2)
     if bbands is not None and not bbands.empty:
-        df["bb_lower"] = bbands.iloc[:, 0]   # Lower band
-        df["bb_mid"] = bbands.iloc[:, 1]     # Middle band (SMA 20)
-        df["bb_upper"] = bbands.iloc[:, 2]   # Upper band
-        # Bandwidth and %B
-        if "bb_upper" in df.columns and "bb_lower" in df.columns:
-            bb_width = df["bb_upper"] - df["bb_lower"]
-            df["bb_width"] = bb_width / df["bb_mid"]
-            df["bb_pct"] = (df["close"] - df["bb_lower"]) / bb_width.replace(0, np.nan)
+        bb_lower = bbands.iloc[:, 0]   # Lower band
+        bb_mid = bbands.iloc[:, 1]     # Middle band (SMA 20)
+        bb_upper = bbands.iloc[:, 2]   # Upper band
+        # Keep raw for internal use but they'll be excluded from features
+        df["bb_lower"] = bb_lower
+        df["bb_mid"] = bb_mid
+        df["bb_upper"] = bb_upper
+        # NORMALIZED features (stationary)
+        bb_width = bb_upper - bb_lower
+        df["bb_width"] = bb_width / bb_mid
+        df["bb_pct"] = (df["close"] - bb_lower) / bb_width.replace(0, np.nan)
 
-    # ATR (Average True Range)
-    df["atr_14"] = ta.atr(df["high"], df["low"], df["close"], length=14)
+    # ATR (Average True Range) — raw is non-stationary
+    atr_14 = ta.atr(df["high"], df["low"], df["close"], length=14)
+    df["atr_14"] = atr_14  # keep for internal use
 
-    # ATR as % of price (normalized — comparable across assets)
-    if "atr_14" in df.columns:
-        df["atr_pct"] = df["atr_14"] / df["close"]
+    # ATR as % of price (normalized — this is the useful feature)
+    if atr_14 is not None:
+        df["atr_pct"] = atr_14 / df["close"]
 
     return df
 
 
 def _add_volume_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    """Volume indicators: OBV, volume SMA ratio."""
+    """Volume indicators: OBV change rate, volume SMA ratio.
+
+    Raw OBV is non-stationary (cumulative). Use rate-of-change instead.
+    """
 
     if "volume" not in df.columns:
         return df
 
-    # OBV (On-Balance Volume)
-    df["obv"] = ta.obv(df["close"], df["volume"])
+    # OBV (On-Balance Volume) — raw is non-stationary (cumulative)
+    obv = ta.obv(df["close"], df["volume"])
+    df["obv"] = obv  # keep for internal use
 
-    # Volume relative to 20-day average
+    # OBV rate of change (stationary — captures the momentum)
+    if obv is not None:
+        obv_sma = obv.rolling(20).mean()
+        df["obv_roc_5"] = obv.pct_change(periods=5)
+        df["obv_roc_20"] = obv.pct_change(periods=20)
+        df["obv_trend"] = np.where(obv > obv_sma, 1, 0)
+
+    # Volume relative to 20-day average (already normalized)
     vol_sma = ta.sma(df["volume"], length=20)
     if vol_sma is not None:
         df["vol_ratio_20"] = df["volume"] / vol_sma.replace(0, np.nan)
@@ -173,14 +218,13 @@ def _add_custom_features(df: pd.DataFrame) -> pd.DataFrame:
     if "sma_50" in df.columns and "sma_200" in df.columns:
         df["sma_cross_50_200"] = (df["sma_50"] > df["sma_200"]).astype(int)
 
-    # Distance from key moving averages (as % of price)
-    if "sma_20" in df.columns:
+    # Distance from key moving averages — use pre-computed normalized
+    # versions if available (from _add_trend_indicators), otherwise compute
+    if "dist_sma_20_pct" not in df.columns and "sma_20" in df.columns:
         df["dist_sma_20"] = (df["close"] - df["sma_20"]) / df["sma_20"]
-
-    if "sma_50" in df.columns:
+    if "dist_sma_50_pct" not in df.columns and "sma_50" in df.columns:
         df["dist_sma_50"] = (df["close"] - df["sma_50"]) / df["sma_50"]
-
-    if "sma_200" in df.columns:
+    if "dist_sma_200_pct" not in df.columns and "sma_200" in df.columns:
         df["dist_sma_200"] = (df["close"] - df["sma_200"]) / df["sma_200"]
 
     # RSI zones (oversold < 30, overbought > 70)

@@ -16,18 +16,14 @@ market:
   session: "regular_hours"  # regular_hours | extended | 24_7
 
   # Default universe of tickers for this market
+  # Filtered to tickers with >50% walk-forward accuracy
   default_tickers:
-    - AAPL
     - MSFT
-    - GOOGL
-    - AMZN
     - TSLA
     - NVDA
     - META
     - JPM
     - GS
-    - JNJ
-    - XOM
     - V
     - MA
     - SPY

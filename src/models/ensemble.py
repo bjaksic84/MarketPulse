@@ -71,6 +71,7 @@ class MarketPulseEnsemble:
         self.model_specs = models_config
         self.models: List[Tuple[str, float, object]] = []  # (name, weight, model)
         self.feature_names: list = []
+        self.optimal_threshold = 0.5  # calibrated during fit for binary
 
         # Detect regression mode from model types
         self._is_regression = any(
@@ -136,7 +137,70 @@ class MarketPulseEnsemble:
             f"Ensemble trained: {len(self.models)} models, "
             f"{len(X_train)} samples, {len(self.feature_names)} features"
         )
+
+        # Calibrate ensemble threshold for binary classification
+        if self.num_classes == 2 and not self._is_regression:
+            self._calibrate_threshold(X_train, y_train, balance_classes=balance_classes)
+
         return self
+
+    def _calibrate_threshold(
+        self,
+        X_train: pd.DataFrame,
+        y_train: pd.Series,
+        balance_classes: bool = True,
+        val_fraction: float = 0.15,
+        min_val_size: int = 42,
+    ):
+        """Calibrate the ensemble-level probability threshold.
+
+        Uses an honest holdout: trains temporary models on the first 85% of
+        training data, evaluates on the last 15%, and finds the threshold that
+        maximizes accuracy.  The threshold is then applied to the main ensemble
+        (which was trained on 100% of training data) for test-time predictions.
+        """
+        n = len(X_train)
+        val_size = max(min_val_size, int(n * val_fraction))
+        if val_size >= n - 50:
+            return
+
+        split_idx = n - val_size
+        X_tr = X_train.iloc[:split_idx]
+        y_tr = y_train.iloc[:split_idx]
+        X_val = X_train.iloc[split_idx:]
+        y_val = y_train.iloc[split_idx:].astype(int)
+
+        # Train temporary models on the reduced training set
+        temp_models = []
+        for i, spec in enumerate(self.model_specs):
+            model_type = spec["type"]
+            weight = self._weights_normalized[i]
+            temp_model = self._create_model(model_type)
+            try:
+                temp_model.fit(X_tr, y_tr, balance_classes=balance_classes)
+                temp_models.append((model_type, weight, temp_model))
+            except Exception as e:
+                logger.warning(f"Temp model {model_type} failed: {e}")
+
+        if not temp_models:
+            return
+
+        # Get ensemble probabilities from temporary models
+        proba_sum = np.zeros((len(X_val), self.num_classes))
+        for name, weight, model in temp_models:
+            proba_sum += weight * model.predict_proba(X_val)
+        proba_up = proba_sum[:, 1]
+
+        best_t, best_acc = 0.5, 0.0
+        for t in np.arange(0.30, 0.70, 0.02):
+            preds = (proba_up >= t).astype(int)
+            acc = (preds == y_val.values).mean()
+            if acc > best_acc:
+                best_acc = acc
+                best_t = t
+
+        self.optimal_threshold = best_t
+        logger.info(f"Ensemble calibrated threshold: {best_t:.2f} (val acc: {best_acc:.3f})")
 
     def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
         """Weighted average of class probabilities.
@@ -176,6 +240,8 @@ class MarketPulseEnsemble:
             return preds_sum
 
         proba = self.predict_proba(X)
+        if self.num_classes == 2 and self.optimal_threshold != 0.5:
+            return (proba[:, 1] >= self.optimal_threshold).astype(int)
         return proba.argmax(axis=1)
 
     def get_feature_importance(self) -> pd.Series:

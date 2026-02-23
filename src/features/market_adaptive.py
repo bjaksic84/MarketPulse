@@ -3,8 +3,6 @@ Market-adaptive features for MarketPulse Phase 3.
 
 Generates features tailored to each market's unique behavior:
 
-- **Crypto**: Weekend effects, 24/7 patterns, extreme volatility regime
-- **Futures**: Overnight gaps, session patterns, contango signals
 - **Indices**: Mean-reversion, VIX-proxy, breadth approximation
 - **Stocks**: Gap analysis, earnings-surprise proxy, sector correlation
 
@@ -156,89 +154,6 @@ def compute_correlation_features(
     return df
 
 
-# ────────────────────── Crypto-Specific Features ──────────────────────
-
-
-def compute_crypto_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Features unique to 24/7 cryptocurrency markets.
-
-    - Weekend effects (crypto trades weekends, often with different patterns)
-    - Day-of-week seasonality
-    - Extreme return indicators (crypto has 10%+ daily moves)
-    """
-    if not isinstance(df.index, pd.DatetimeIndex):
-        return df
-
-    # Day of week (0=Mon, 6=Sun)
-    dow = df.index.dayofweek
-    df["is_weekend"] = (dow >= 5).astype(int)
-    df["day_of_week"] = dow / 6.0  # Normalized 0-1
-
-    # Weekend return pattern
-    df["weekend_return"] = np.where(dow == 0, df.get("returns", 0), 0)  # Monday = post-weekend
-
-    # Extreme move indicators (crypto-specific thresholds)
-    if "returns" in df.columns:
-        df["extreme_up"] = (df["returns"] > 0.05).astype(int)     # >5% daily gain
-        df["extreme_down"] = (df["returns"] < -0.05).astype(int)   # >5% daily loss
-        df["extreme_count_10d"] = (
-            df["returns"].abs() > 0.03
-        ).rolling(10).sum()  # Extreme days in last 10
-
-    # Crypto fear/greed proxy: return dispersion
-    if "returns" in df.columns:
-        df["return_dispersion_5d"] = df["returns"].rolling(5).apply(
-            lambda x: (x.max() - x.min()), raw=True
-        )
-
-    return df
-
-
-# ────────────────────── Futures-Specific Features ──────────────────────
-
-
-def compute_futures_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Features unique to futures markets.
-
-    - Session gaps (futures have daily settlement breaks)
-    - Roll-related signals (front-month behavior near expiry)
-    - Carry/momentum style indicators
-    """
-    if not isinstance(df.index, pd.DatetimeIndex):
-        return df
-
-    # Enhanced gap analysis (futures have larger settlement gaps)
-    if "open" in df.columns and "close" in df.columns:
-        gap = df["open"] / df["close"].shift(1) - 1
-        df["settlement_gap"] = gap
-        df["large_gap"] = (gap.abs() > 0.01).astype(int)  # >1% gap
-
-    # Day-of-week effects (Mon/Fri patterns)
-    dow = df.index.dayofweek
-    df["is_monday"] = (dow == 0).astype(int)
-    df["is_friday"] = (dow == 4).astype(int)
-
-    # Month-end effects (futures contracts settle monthly/quarterly)
-    df["is_month_end_week"] = (df.index.day >= 25).astype(int)
-    df["is_quarter_end"] = (
-        (df.index.month.isin([3, 6, 9, 12])) & (df.index.day >= 15)
-    ).astype(int)
-
-    # Momentum persistence (futures trend more than stocks)
-    if "returns" in df.columns:
-        # Positive momentum streak
-        pos = (df["returns"] > 0).astype(int)
-        df["momentum_streak"] = pos.groupby((pos != pos.shift()).cumsum()).cumcount() + 1
-        df["momentum_streak"] = np.where(df["returns"] > 0, df["momentum_streak"], -df["momentum_streak"])
-
-        # Trend consistency: fraction of days returns agree with 20d return direction
-        trend_dir = np.sign(df["returns"].rolling(20).mean())
-        same_sign = (np.sign(df["returns"]) == trend_dir).astype(int)
-        df["trend_consistency_20d"] = same_sign.rolling(20).mean()
-
-    return df
-
-
 # ────────────────────── Index-Specific Features ──────────────────────
 
 
@@ -335,13 +250,7 @@ def compute_market_adaptive_features(
         df = compute_correlation_features(df, benchmark_returns=benchmark_returns)
 
     # ── Market-specific features ──
-    if market_name == "crypto":
-        df = compute_crypto_features(df)
-
-    elif market_name == "futures":
-        df = compute_futures_features(df)
-
-    elif market_name == "indices":
+    if market_name == "indices":
         df = compute_index_features(df)
 
     elif market_name == "stocks":
@@ -382,18 +291,6 @@ def get_adaptive_feature_names(market_name: str) -> List[str]:
     ]
 
     # Market-specific
-    crypto = [
-        "is_weekend", "day_of_week", "weekend_return",
-        "extreme_up", "extreme_down", "extreme_count_10d",
-        "return_dispersion_5d",
-    ]
-
-    futures = [
-        "settlement_gap", "large_gap", "is_monday", "is_friday",
-        "is_month_end_week", "is_quarter_end",
-        "momentum_streak", "trend_consistency_20d",
-    ]
-
     indices = [
         "reversion_zscore_10d", "reversion_zscore_20d", "reversion_zscore_50d",
         "dist_52w_high", "dist_52w_low", "pct_52w_range",
@@ -404,8 +301,6 @@ def get_adaptive_feature_names(market_name: str) -> List[str]:
     stocks = ["dist_52w_high", "dist_52w_low"] + gap + correlation
 
     mapping = {
-        "crypto": universal + crypto + correlation,
-        "futures": universal + gap + futures + correlation,
         "indices": universal + gap + indices + correlation,
         "stocks": universal + stocks,
     }

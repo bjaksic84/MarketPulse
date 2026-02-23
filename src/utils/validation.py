@@ -45,6 +45,7 @@ class WalkForwardValidator:
     - Training data always precedes test data
     - No data leakage across folds
     - Training window expands (or slides) over time
+    - A purge gap between train and test prevents label leakage
 
     Parameters
     ----------
@@ -59,6 +60,9 @@ class WalkForwardValidator:
         If False, training window slides (fixed size).
     min_train_samples : int
         Minimum training samples required (skip fold if not met).
+    purge_days : int
+        Gap between train end and test start to prevent label leakage.
+        Should be >= prediction horizon to avoid forward-return overlap.
     """
 
     def __init__(
@@ -68,12 +72,14 @@ class WalkForwardValidator:
         step_days: int = 21,
         expanding: bool = True,
         min_train_samples: int = 400,
+        purge_days: int = 0,
     ):
         self.initial_train_days = initial_train_days
         self.test_days = test_days
         self.step_days = step_days
         self.expanding = expanding
         self.min_train_samples = min_train_samples
+        self.purge_days = purge_days
 
     def split(
         self,
@@ -99,26 +105,28 @@ class WalkForwardValidator:
         fold_num = 0
 
         # Determine the initial split point
+        # Purge gap goes between train_end and test_start
         train_end = self.initial_train_days - 1
-        test_start = train_end + 1
+        test_start = train_end + 1 + self.purge_days
 
         while test_start + self.test_days <= n:
             test_end = min(test_start + self.test_days - 1, n - 1)
 
             # For expanding window, train always starts at 0
-            # For sliding window, train starts at (test_start - initial_train_days)
+            # For sliding window, train starts at (test_start - purge - initial_train_days)
             if self.expanding:
                 train_start = 0
             else:
-                train_start = max(0, test_start - self.initial_train_days)
+                train_start = max(0, test_start - self.purge_days - self.initial_train_days)
 
-            train_size = test_start - train_start
+            train_actual_end = test_start - 1 - self.purge_days
+            train_size = train_actual_end - train_start + 1
 
             if train_size >= self.min_train_samples:
                 fold = WalkForwardFold(
                     fold_number=fold_num,
                     train_start=train_start,
-                    train_end=test_start - 1,
+                    train_end=train_actual_end,
                     test_start=test_start,
                     test_end=test_end,
                 )
@@ -197,11 +205,14 @@ class WalkForwardValidator:
     def from_strategy_config(cls, strategy_config: dict) -> "WalkForwardValidator":
         """Create a WalkForwardValidator from a strategy config dict."""
         val_config = strategy_config.get("validation", {})
+        # Purge days should be >= prediction horizon to prevent label leakage
+        default_purge = strategy_config.get("default_horizon", 5)
         return cls(
             initial_train_days=val_config.get("initial_train_days", 504),
             test_days=val_config.get("test_days", 21),
             step_days=val_config.get("step_days", 21),
             min_train_samples=val_config.get("min_train_samples", 400),
+            purge_days=val_config.get("purge_days", default_purge),
         )
 
     def summary(self, X: pd.DataFrame) -> str:

@@ -7,45 +7,46 @@ strategy:
 
   # Prediction horizons (in trading days)
   horizon_days: [1, 3, 5]
-  default_horizon: 1
+  default_horizon: 5
 
   # Label configuration
   label_type: "classification"  # classification | regression | regime
-  num_classes: 3                # 2 = UP/DOWN, 3 = UP/FLAT/DOWN
-  threshold: 0.01               # ±1% threshold for FLAT zone (only if num_classes=3)
+  num_classes: 2                # 2 = UP/DOWN (more tractable than 3-class)
+  threshold: 0.0                # Binary: >= 0 = UP, < 0 = DOWN
 
   # Feature modules to use
   features:
     - technical
     - returns
     - market_adaptive            # Phase 3: market-specific features
+    - macro                      # Phase 4: calendar/macro features
     - sentiment                  # Phase 2: requires --sentiment flag
 
-  # Model configuration
+  # Model configuration — stronger regularization to combat overfitting
   model:
     type: "xgboost_classifier"
     hyperparameters:
-      max_depth: 6
-      n_estimators: 300
-      learning_rate: 0.05
-      subsample: 0.8
-      colsample_bytree: 0.8
-      min_child_weight: 3
-      gamma: 0.1
-      reg_alpha: 0.1
-      reg_lambda: 1.0
+      max_depth: 3
+      n_estimators: 150
+      learning_rate: 0.03
+      subsample: 0.7
+      colsample_bytree: 0.6
+      min_child_weight: 10
+      gamma: 0.5
+      reg_alpha: 0.5
+      reg_lambda: 3.0
       random_state: 42
       n_jobs: -1
-      eval_metric: "mlogloss"
+      eval_metric: "logloss"
 
   # Ensemble (Phase 3) — combine XGBoost + LightGBM
   ensemble:
     enabled: true
     models:
       - type: "xgboost_classifier"
-        weight: 0.5
+        weight: 0.7
       - type: "lightgbm_classifier"
-        weight: 0.5
+        weight: 0.3
 
   # Feature lookback window (trading days)
   lookback_days: 60
@@ -54,7 +55,7 @@ strategy:
   validation:
     method: "walk_forward"
     initial_train_days: 504   # ~2 years
-    test_days: 21             # ~1 month
+    test_days: 42             # ~2 months (larger test windows reduce variance)
     step_days: 21             # step forward 1 month
     min_train_samples: 400
 
@@ -67,7 +68,8 @@ strategy:
   # Feature selection
   feature_selection:
     method: "importance"       # importance | mutual_info | none
-    max_features: 15           # keep top N features
+    max_features: 8            # keep top N features (fewer = less overfit)
+    corr_threshold: 0.85         # remove correlated features above this
     min_importance: 0.01       # drop features with <1% importance
 
   # Stock-specific adaptive feature settings

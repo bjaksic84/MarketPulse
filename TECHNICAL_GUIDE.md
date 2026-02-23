@@ -34,14 +34,11 @@ ML project/
 ├── config/
 │   ├── markets/
 │   │   ├── stocks.yaml       # US Equities config
-│   │   ├── crypto.yaml       # Cryptocurrency config
-│   │   ├── futures.yaml      # Futures config
 │   │   └── indices.yaml      # Market Indices config
 │   └── strategies/
-│       ├── short_term.yaml           # Short-term swing trading (classification)
-│       ├── crypto_short_term.yaml    # Crypto-specific short-term
-│       ├── futures_short_term.yaml   # Futures-specific short-term
+│       ├── short_term.yaml           # Short-term stock classification
 │       ├── indices_short_term.yaml   # Indices-specific short-term
+│       ├── indices_medium_term.yaml  # Indices-specific medium-term
 │       ├── medium_term.yaml          # Medium-term classification (5-10 day)
 │       └── medium_term_regression.yaml  # Medium-term regression (continuous)
 │
@@ -121,7 +118,7 @@ YAML Configs ──→ Data Fetcher ──→ Preprocessor ──→ Feature Eng
      Regime Detection ──→ Walk-Forward Splitter ──→ Ensemble/Model ──→ Evaluate
                               │                        │
                          Classification          Regression
-                         (3-class)              (continuous)
+                         (2-class binary)        (continuous)
                             │                       │
                         Evaluator          RegressionEvaluator
 ```
@@ -159,22 +156,20 @@ Each market YAML defines how to fetch, format, and process data for that market.
 | `name` | Internal identifier | `"stocks"` |
 | `display_name` | Human-readable name | `"US Equities"` |
 | `data_source` | Which API to use | `"yfinance"` |
-| `ticker_format` | How to build the yfinance symbol | `"{symbol}"` (stocks), `"{symbol}-USD"` (crypto), `"{symbol}=F"` (futures), `"^{symbol}"` (indices) |
-| `calendar` | Trading calendar | `"NYSE"`, `"CME"`, `"24_7"` |
-| `trading_days_per_year` | For annualization | 252 (stocks), 365 (crypto) |
-| `default_tickers` | Universe of tickers to trade | `[AAPL, MSFT, GOOGL, ...]` |
+| `ticker_format` | How to build the yfinance symbol | `"{symbol}"` (stocks), `"^{symbol}"` (indices) |
+| `calendar` | Trading calendar | `"NYSE"` |
+| `trading_days_per_year` | For annualization | 252 |
+| `default_tickers` | Universe of tickers to trade | `[MSFT, TSLA, NVDA, ...]` (stocks), `[GSPC, DJI, ...]` (indices) |
 | `benchmark` | For beta calculation | `"SPY"` |
 | `volume_normalization` | Method for normalizing volume | `"z_score"`, `"min_max"`, or `"log"` |
-| `use_adjusted_close` | Whether to adjust OHLC for splits/dividends | `true` (stocks), `false` (crypto) |
-| `has_gaps` | Whether the market has non-trading days | `true` (stocks), `false` (crypto) |
+| `use_adjusted_close` | Whether to adjust OHLC for splits/dividends | `true` |
+| `has_gaps` | Whether the market has non-trading days | `true` |
 
 **Ticker formatting** converts base symbols to yfinance-compatible tickers:
 
 ```python
-MarketConfig.format_ticker("BTC")  # → "BTC-USD"  (crypto)
-MarketConfig.format_ticker("ES")   # → "ES=F"     (futures)
 MarketConfig.format_ticker("GSPC") # → "^GSPC"    (indices)
-MarketConfig.format_ticker("AAPL") # → "AAPL"     (stocks)
+MarketConfig.format_ticker("MSFT") # → "MSFT"     (stocks)
 ```
 
 ### Strategy Config (`config/strategies/short_term.yaml`)
@@ -183,11 +178,11 @@ Defines the prediction task, model hyperparameters, and validation scheme.
 
 | Section | Key Fields |
 |---------|------------|
-| **Prediction** | `horizon_days: [1, 3, 5]`, `default_horizon: 1`, `label_type: classification`, `num_classes: 3`, `threshold: 0.01` |
-| **Model** | `type: xgboost_classifier`, `max_depth: 6`, `n_estimators: 300`, `learning_rate: 0.05`, `subsample: 0.8`, etc. |
-| **Validation** | `method: walk_forward`, `initial_train_days: 504` (~2 years), `test_days: 21` (~1 month), `step_days: 21` |
+| **Prediction** | `horizon_days: [1, 3, 5]`, `default_horizon: 5`, `label_type: classification`, `num_classes: 2`, `threshold: 0.0` |
+| **Model** | `type: xgboost_classifier`, `max_depth: 3`, `n_estimators: 150`, `learning_rate: 0.03`, `subsample: 0.8`, etc. |
+| **Validation** | `method: walk_forward`, `initial_train_days: 504` (~2 years), `test_days: 42` (~2 months), `step_days: 21` |
 | **Data** | `years_of_history: 5`, `min_data_points: 1000`, `max_missing_pct: 0.05` |
-| **Feature Selection** | `max_features: 15`, `min_importance: 0.01` |
+| **Feature Selection** | `max_features: 8`, `corr_threshold: 0.85` |
 
 ---
 
@@ -690,10 +685,8 @@ Tests the configuration system and data fetching:
 | Test | What it verifies |
 |------|-----------------|
 | `test_load_stocks_config` | Stocks YAML loads correctly, fields match |
-| `test_load_crypto_config` | Crypto YAML loads, `trading_days_per_year=365` |
-| `test_load_futures_config` | Futures YAML loads, CME calendar |
 | `test_load_indices_config` | Indices YAML loads correctly |
-| `test_format_ticker_*` (4 tests) | Ticker formatting: `AAPL→AAPL`, `BTC→BTC-USD`, `ES→ES=F`, `GSPC→^GSPC` |
+| `test_format_ticker_*` (2 tests) | Ticker formatting: `MSFT→MSFT`, `GSPC→^GSPC` |
 | `test_default_tickers_not_empty` | Config has a non-empty ticker list |
 | `test_missing_config` | `FileNotFoundError` for non-existent market |
 | `test_strategy_config_loading` | Strategy config loads with expected keys |
@@ -791,20 +784,17 @@ pip install -r requirements.txt
 ### Train a model
 
 ```bash
-# Single ticker, 1-day horizon
-python -m src.models.trainer --market stocks --tickers AAPL --horizon 1
+# Single ticker, 5-day horizon
+python -m src.models.trainer --market stocks --tickers MSFT --horizon 5
 
 # Multiple tickers
-python -m src.models.trainer --market stocks --tickers AAPL MSFT GOOGL --horizon 5
+python -m src.models.trainer --market stocks --tickers MSFT NVDA JPM --horizon 5
 
-# Crypto market
-python -m src.models.trainer --market crypto --tickers BTC ETH --horizon 1
+# Indices market
+python -m src.models.trainer --market indices --tickers GSPC DJI --horizon 5
 
-# Futures market
-python -m src.models.trainer --market futures --tickers ES GC --horizon 3
-
-# All default tickers in a market (14 stocks)
-python -m src.models.trainer --market stocks --horizon 1
+# All default tickers in a market
+python -m src.models.trainer --market stocks --horizon 5
 ```
 
 ### Run the dashboard
@@ -840,10 +830,9 @@ Standard k-fold cross-validation shuffles data and assumes samples are i.i.d. (i
 
 ### 3. Config-Driven Extensibility
 
-Everything market-specific or strategy-specific lives in YAML. To add crypto trading:
-1. Config already exists (`config/markets/crypto.yaml`).
-2. Run: `python -m src.models.trainer --market crypto --tickers BTC --horizon 1`.
-3. No code changes.
+Everything market-specific or strategy-specific lives in YAML. The system currently supports two markets:
+1. **Indices** (primary): `config/markets/indices.yaml` — ^GSPC, ^DJI, ^IXIC, ^RUT
+2. **Stocks** (secondary): `config/markets/stocks.yaml` — MSFT, TSLA, NVDA, META, JPM, GS, V, MA, SPY
 
 ### 4. Honest Evaluation
 
@@ -993,7 +982,7 @@ Phase 2 adds 35 new tests (90 total):
 
 > **Updated:** Phase 3
 
-Phase 3 transforms MarketPulse from a stocks-only tool into a **multi-market prediction system** with market-adaptive features, ensemble modelling, and regime detection.
+Phase 3 adds **market-adaptive features, ensemble modelling, and regime detection**. The system focuses on US indices (primary) and US stocks (secondary).
 
 ---
 
@@ -1001,10 +990,9 @@ Phase 3 transforms MarketPulse from a stocks-only tool into a **multi-market pre
 
 ```
 config/strategies/
-├── crypto_short_term.yaml      # Crypto-specific thresholds & params
-├── futures_short_term.yaml     # Futures-specific strategy
-├── indices_short_term.yaml     # Indices-specific strategy
-└── short_term.yaml             # UPDATED: ensemble + market_adaptive sections
+├── indices_short_term.yaml     # Indices-specific short-term strategy
+├── indices_medium_term.yaml    # Indices-specific medium-term strategy
+└── short_term.yaml             # UPDATED: ensemble + market_adaptive + macro sections
 
 src/features/
 └── market_adaptive.py          # Market-specific feature generators
@@ -1029,20 +1017,22 @@ tests/
 
 Each market gets a tuned YAML config reflecting its unique characteristics:
 
-| Setting | Stocks | Crypto | Futures | Indices |
-|---|---|---|---|---|
-| **Threshold** | ±1.0% | ±2.0% | ±0.8% | ±0.5% |
-| **Max Depth** | 6 | 8 | 5 | 5 |
-| **N Estimators** | 300 | 400 | 250 | 350 |
-| **Learning Rate** | 0.05 | 0.03 | 0.05 | 0.04 |
-| **Initial Train** | 504d (~2y) | 365d (~1y) | 504d (~2y) | 504d (~2y) |
-| **Test Window** | 21d | 14d | 21d | 21d |
-| **Years History** | 5 | 4 | 5 | 8 |
+| Setting | Stocks | Indices |
+|---|---|---|
+| **Threshold** | 0.0 (binary) | 0.0 (binary) |
+| **Max Depth** | 3 | 3 |
+| **N Estimators** | 150 | 150 |
+| **Learning Rate** | 0.03 | 0.03 |
+| **Initial Train** | 504d (~2y) | 504d (~2y) |
+| **Test Window** | 42d | 42d |
+| **Years History** | 5 | 8 |
+| **Num Classes** | 2 | 2 |
+| **Max Features** | 8 | 8 |
 
-**Why different?**
-- **Crypto** has extreme volatility → wider threshold (±2%), deeper trees to capture non-linear patterns, shorter training window (pre-2020 data is a different market)
-- **Futures** are leveraged → smaller threshold (±0.8%), shallower trees (cleaner signals), gap analysis for overnight settlement gaps
-- **Indices** are diversified → smallest threshold (±0.5%), longer history captures mean-reversion patterns, VIX-proxy features
+**Why different history length?**
+- **Indices** are diversified → longer history captures mean-reversion patterns, aggregation removes idiosyncratic noise
+- **Stocks** have more regime changes → 5 years balances recency vs data volume
+- Both use strong regularization (max_depth=3, reg_lambda=3.0) to prevent overfitting
 
 ---
 
@@ -1061,24 +1051,6 @@ Each market gets a tuned YAML config reflecting its unique characteristics:
 | `volume_spike` | $\mathbb{1}[V_t > k \cdot \bar{V}_{20}]$ | Volume spike flag |
 | `volume_momentum_5d` | $\sum V_{5d} / \sum V_{20d}$ | Short-term volume momentum |
 
-### Crypto-Only Features
-
-| Feature | Formula | Purpose |
-|---|---|---|
-| `is_weekend` | $\mathbb{1}[\text{DOW} \geq 5]$ | Weekend trading flag (crypto is 24/7) |
-| `day_of_week` | DOW / 6 (normalised) | Weekday seasonality |
-| `extreme_up/down` | $\mathbb{1}[\|r_t\| > 5\%]$ | Extreme move indicators |
-| `return_dispersion_5d` | $\max(r_{5d}) - \min(r_{5d})$ | Short-term return range |
-
-### Futures-Only Features
-
-| Feature | Formula | Purpose |
-|---|---|---|
-| `settlement_gap` | $O_t / C_{t-1} - 1$ | Overnight settlement gap |
-| `is_month_end_week` | $\mathbb{1}[\text{day} \geq 25]$ | Contract roll proximity |
-| `momentum_streak` | Consecutive same-sign returns | Trend persistence (futures trend more) |
-| `trend_consistency_20d` | Fraction of days trending | How clean is the trend? |
-
 ### Index-Only Features
 
 | Feature | Formula | Purpose |
@@ -1089,7 +1061,7 @@ Each market gets a tuned YAML config reflecting its unique characteristics:
 | `vol_term_structure` | $\text{vol}_{10d} / \text{vol}_{30d}$ | Short vs long vol (inverted = fear) |
 | `days_since_big_move` | Count since $\|r_t\| > 1\%$ | Range compression → breakout signal |
 
-### Gap Features (Stocks + Futures + Indices)
+### Gap Features (Stocks + Indices)
 
 | Feature | Formula | Purpose |
 |---|---|---|
@@ -1165,13 +1137,13 @@ ensemble:
 
 ### Per-Market Tuning
 
-| Setting | Stocks | Crypto | Futures | Indices |
-|---|---|---|---|---|
-| Short trend | 20 | 10 | 15 | 20 |
-| Long trend | 50 | 30 | 40 | 50 |
-| Smooth window | 5 | 3 | 5 | 7 |
+| Setting | Stocks | Indices |
+|---|---|---|
+| Short trend | 20 | 20 |
+| Long trend | 50 | 50 |
+| Smooth window | 5 | 7 |
 
-Crypto uses shorter windows (faster regime shifts). Indices use longer smoothing (more stable regimes).
+Indices use longer smoothing (more stable regimes).
 
 ---
 
@@ -1182,7 +1154,7 @@ The trainer (`src/models/trainer.py`) now supports:
 1. **`--no-ensemble`** flag to disable ensemble (use single XGBoost)
 2. **`--no-adaptive`** flag to disable market-adaptive features
 3. Automatic regime detection for all runs
-4. Per-market strategy configs: `python -m src.models.trainer --market crypto --strategy crypto_short_term`
+4. Per-market strategy configs: `python -m src.models.trainer --market indices --strategy indices_short_term`
 
 ### Pipeline Flow (Phase 3+4)
 
@@ -1202,17 +1174,15 @@ Fetch → Preprocess → Technical Features → Return Features
 
 ## Phase 3 Test Coverage
 
-Phase 3 adds 37 new tests (127 total):
+Phase 3 adds new tests for market-adaptive features, regime detection, and ensemble:
 
 | Test Class | Tests | Covers |
 |---|---|---|
 | `TestVolatilityRegime` | 2 | Vol regime ratio, expansion flag, label |
 | `TestGapFeatures` | 2 | Gap columns, direction flags |
 | `TestVolumeSpike` | 2 | Spike detection, custom thresholds |
-| `TestCryptoFeatures` | 2 | Weekend detection, extreme moves |
-| `TestFuturesFeatures` | 2 | Session patterns, momentum streaks |
 | `TestIndexFeatures` | 2 | Mean-reversion, 52w high distance |
-| `TestAdaptiveDispatcher` | 5 | All 4 markets + feature listing |
+| `TestAdaptiveDispatcher` | 3 | Stocks, indices + feature listing |
 | `TestRegimeConfig` | 2 | Defaults, per-market configs |
 | `TestRegimeDetector` | 7 | Columns, values, bounds, summary, transitions |
 | `TestLGBClassifier` | 5 | Fit/predict, proba, importance, binary |

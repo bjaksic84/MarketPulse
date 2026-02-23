@@ -16,7 +16,6 @@ market:
     - DJI     # Dow Jones
     - IXIC    # Nasdaq Composite
     - RUT     # Russell 2000
-    - VIX     # Volatility Index
 
   benchmark: "GSPC"
 

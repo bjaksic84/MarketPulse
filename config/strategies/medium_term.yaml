@@ -12,8 +12,8 @@ strategy:
 
   # Label configuration — supports BOTH classification and regression
   label_type: "classification"  # classification | regression
-  num_classes: 3                # 2 = UP/DOWN, 3 = UP/FLAT/DOWN
-  threshold: 0.02               # ±2% threshold over 5 days
+  num_classes: 2                # 2 = UP/DOWN (more tractable for medium-term)
+  threshold: 0.0                # Binary: >= 0 = UP, < 0 = DOWN
 
   # Feature modules to use
   features:
@@ -23,31 +23,31 @@ strategy:
     - macro                     # Phase 4: calendar/macro features
     - sentiment
 
-  # Model configuration
+  # Model configuration — conservative for ~1000 sample regime
   model:
     type: "xgboost_classifier"
     hyperparameters:
-      max_depth: 5              # Shallower — less overfitting on longer horizon
-      n_estimators: 400         # More trees — longer horizon has more signal
-      learning_rate: 0.03       # Slower learning — more stable
-      subsample: 0.75
-      colsample_bytree: 0.75
-      min_child_weight: 5       # Higher — need more evidence per leaf
-      gamma: 0.2
-      reg_alpha: 0.2
-      reg_lambda: 1.5           # More regularization
+      max_depth: 3              # Shallow to prevent overfitting
+      n_estimators: 150         # Moderate tree count
+      learning_rate: 0.03       # Lower learning rate
+      subsample: 0.70
+      colsample_bytree: 0.60
+      min_child_weight: 10      # Strong leaf constraint
+      gamma: 0.5
+      reg_alpha: 0.5
+      reg_lambda: 3.0           # Strong regularization
       random_state: 42
       n_jobs: -1
-      eval_metric: "mlogloss"
+      eval_metric: "logloss"
 
   # Ensemble
   ensemble:
     enabled: true
     models:
       - type: "xgboost_classifier"
-        weight: 0.5
+        weight: 0.7
       - type: "lightgbm_classifier"
-        weight: 0.5
+        weight: 0.3
 
   # Feature lookback
   lookback_days: 90             # Wider lookback for medium-term patterns
@@ -69,7 +69,8 @@ strategy:
   # Feature selection
   feature_selection:
     method: "importance"
-    max_features: 20            # More features — richer signal at medium term
+    max_features: 8             # Fewer features to reduce overfitting
+    corr_threshold: 0.85
     min_importance: 0.005
 
   # Market-adaptive settings for stocks (default)

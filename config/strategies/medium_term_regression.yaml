@@ -64,7 +64,8 @@ strategy:
   # Feature selection
   feature_selection:
     method: "importance"
-    max_features: 25
+    max_features: 12
+    corr_threshold: 0.85
     min_importance: 0.003
 
   # Adaptive features

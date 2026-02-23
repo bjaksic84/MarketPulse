@@ -23,20 +23,9 @@ class TestMarketConfig:
         assert config.name == "stocks"
         assert config.data_source == "yfinance"
         assert config.ticker_format == "{symbol}"
-        assert "AAPL" in config.default_tickers
+        assert "MSFT" in config.default_tickers
         assert config.has_splits is True
         assert config.use_adjusted_close is True
-
-    def test_load_crypto_config(self):
-        config = load_market_config("crypto")
-        assert config.name == "crypto"
-        assert config.ticker_format == "{symbol}-USD"
-        assert config.session == "24_7"
-        assert config.has_gaps is False
-
-    def test_load_futures_config(self):
-        config = load_market_config("futures")
-        assert config.ticker_format == "{symbol}=F"
 
     def test_load_indices_config(self):
         config = load_market_config("indices")
@@ -44,28 +33,18 @@ class TestMarketConfig:
 
     def test_format_ticker_stocks(self):
         config = load_market_config("stocks")
-        assert config.format_ticker("AAPL") == "AAPL"
         assert config.format_ticker("MSFT") == "MSFT"
-
-    def test_format_ticker_crypto(self):
-        config = load_market_config("crypto")
-        assert config.format_ticker("BTC") == "BTC-USD"
-        assert config.format_ticker("ETH") == "ETH-USD"
-
-    def test_format_ticker_futures(self):
-        config = load_market_config("futures")
-        assert config.format_ticker("ES") == "ES=F"
-        assert config.format_ticker("GC") == "GC=F"
+        assert config.format_ticker("NVDA") == "NVDA"
 
     def test_format_ticker_indices(self):
         config = load_market_config("indices")
         assert config.format_ticker("GSPC") == "^GSPC"
-        assert config.format_ticker("VIX") == "^VIX"
+        assert config.format_ticker("DJI") == "^DJI"
 
     def test_format_tickers_list(self):
-        config = load_market_config("crypto")
-        result = config.format_tickers(["BTC", "ETH"])
-        assert result == ["BTC-USD", "ETH-USD"]
+        config = load_market_config("indices")
+        result = config.format_tickers(["GSPC", "DJI"])
+        assert result == ["^GSPC", "^DJI"]
 
     def test_format_tickers_default(self):
         config = load_market_config("stocks")
@@ -80,15 +59,13 @@ class TestMarketConfig:
     def test_list_available_markets(self):
         markets = list_available_markets()
         assert "stocks" in markets
-        assert "crypto" in markets
-        assert "futures" in markets
         assert "indices" in markets
 
     def test_load_strategy_config(self):
         config = load_strategy_config("short_term")
         assert config["name"] == "short_term"
         assert config["label_type"] == "classification"
-        assert config["default_horizon"] == 1
+        assert config["default_horizon"] == 5
         assert "model" in config
         assert "validation" in config
 

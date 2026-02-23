@@ -27,6 +27,7 @@ from ..data.preprocessing import preprocess_ohlcv
 from ..features.labels import generate_labels, get_clean_features_and_labels
 from ..features.returns import compute_return_features
 from ..features.technical import compute_technical_indicators
+from ..features.feature_selection import select_features_pipeline
 from ..utils.validation import WalkForwardValidator
 from .evaluator import EvaluationReport, MarketPulseEvaluator
 from .xgboost_classifier import MarketPulseXGBClassifier
@@ -127,6 +128,14 @@ class MarketPulseTrainer:
 
         # Phase 4: macro features
         self.use_macro = "macro" in self.strategy_config.get("features", [])
+
+        # Feature selection config
+        self.feature_selection_cfg = self.strategy_config.get(
+            "feature_selection", {}
+        )
+        self.use_feature_selection = self.feature_selection_cfg.get(
+            "method", "none"
+        ) != "none"
 
         # Regression evaluator (Phase 4)
         self.regression_evaluator = RegressionEvaluator()
@@ -263,6 +272,34 @@ class MarketPulseTrainer:
         X, y = get_clean_features_and_labels(df)
         logger.info(f"  Clean dataset: {len(X)} samples, {X.shape[1]} features")
 
+        # 5b. Feature selection (reduce overfitting from too many features)
+        if self.use_feature_selection:
+            fs_cfg = self.feature_selection_cfg
+            max_features = fs_cfg.get("max_features", 15)
+            method = fs_cfg.get("method", "importance")
+            corr_threshold = fs_cfg.get("corr_threshold", 0.85)
+
+            logger.info(
+                f"Running feature selection: method={method}, "
+                f"max_features={max_features}"
+            )
+
+            # Use initial training window for selection to avoid leakage
+            n_select = min(
+                self.validator.initial_train_days, len(X)
+            )
+            selected_features, _ = select_features_pipeline(
+                X.iloc[:n_select],
+                y.iloc[:n_select],
+                max_features=max_features,
+                corr_threshold=corr_threshold,
+                method=method,
+            )
+            X = X[selected_features]
+            logger.info(
+                f"  After selection: {X.shape[1]} features"
+            )
+
         if len(X) < self.validator.initial_train_days + self.validator.test_days:
             raise ValueError(
                 f"Insufficient data for walk-forward validation: "
@@ -391,6 +428,12 @@ class MarketPulseTrainer:
         exclude_cols = {
             "label", "label_name",
             "open", "high", "low", "close", "volume", "adj_close",
+            # Non-stationary price-level columns
+            "sma_20", "sma_50", "sma_200",
+            "ema_12", "ema_26",
+            "bb_lower", "bb_mid", "bb_upper",
+            "atr_14", "obv",
+            "macd", "macd_hist", "macd_signal",
         }
         exclude_cols.update(col for col in df.columns if col.startswith("fwd_return"))
 
