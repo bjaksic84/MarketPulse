@@ -31,6 +31,11 @@ from ..utils.validation import WalkForwardValidator
 from .evaluator import EvaluationReport, MarketPulseEvaluator
 from .xgboost_classifier import MarketPulseXGBClassifier
 
+# Phase 3 imports
+from .ensemble import MarketPulseEnsemble
+from ..features.market_adaptive import compute_market_adaptive_features
+from ..analysis.regime import detect_regime
+
 # Sentiment (Phase 2) — optional import
 try:
     from ..features.sentiment import fetch_and_score_news, merge_sentiment_features
@@ -62,8 +67,11 @@ class MarketPulseTrainer:
         use_sentiment: bool = False,
         newsapi_key: Optional[str] = None,
         sentiment_days: int = 60,
+        use_ensemble: bool = True,
+        use_market_adaptive: bool = True,
     ):
         # Load configs
+        self.market_name = market_name
         self.market_config = load_market_config(market_name)
         self.strategy_config = load_strategy_config(strategy_name)
 
@@ -105,6 +113,13 @@ class MarketPulseTrainer:
                 "Sentiment requested but transformers/torch not installed. "
                 "Install with: pip install transformers torch"
             )
+
+        # Phase 3 settings
+        ensemble_cfg = self.strategy_config.get("ensemble", {})
+        self.use_ensemble = use_ensemble and ensemble_cfg.get("enabled", False)
+        self.use_market_adaptive = use_market_adaptive and (
+            "market_adaptive" in self.strategy_config.get("features", [])
+        )
 
     def run(self, verbose: bool = True) -> Dict[str, EvaluationReport]:
         """Execute the full training pipeline for all tickers.
@@ -204,6 +219,19 @@ class MarketPulseTrainer:
             except Exception as e:
                 logger.warning(f"Sentiment failed for {base_ticker}: {e}")
 
+        # 3c. Market-adaptive features (Phase 3)
+        if self.use_market_adaptive:
+            logger.info(f"Computing market-adaptive features ({self.market_name})...")
+            df = compute_market_adaptive_features(
+                df,
+                market_name=self.market_name,
+                strategy_config=self.strategy_config,
+            )
+
+        # 3d. Regime detection (Phase 3)
+        logger.info("Detecting market regime...")
+        df = detect_regime(df, market_name=self.market_name)
+
         # 4. Generate labels
         logger.info(f"Generating labels (horizon={self.horizon}d)...")
         df = generate_labels(
@@ -227,6 +255,9 @@ class MarketPulseTrainer:
 
         # 6. Walk-forward training and evaluation
         logger.info("Starting walk-forward validation...")
+        if self.use_ensemble:
+            logger.info("  Using ensemble model (XGBoost + LightGBM)")
+
         folds = self.validator.split(X)
         fold_results = []
         last_model = None
@@ -236,10 +267,15 @@ class MarketPulseTrainer:
                 X, y, fold
             )
 
-            # Train model
-            model = MarketPulseXGBClassifier.from_strategy_config(
-                self.strategy_config
-            )
+            # Train model (ensemble or single)
+            if self.use_ensemble:
+                model = MarketPulseEnsemble.from_strategy_config(
+                    self.strategy_config
+                )
+            else:
+                model = MarketPulseXGBClassifier.from_strategy_config(
+                    self.strategy_config
+                )
             model.fit(X_train, y_train)
 
             # Predict
@@ -318,6 +354,15 @@ class MarketPulseTrainer:
         df = preprocess_ohlcv(raw_df, market_config=self.market_config)
         df = compute_technical_indicators(df)
         df = compute_return_features(df)
+
+        # Phase 3: market-adaptive + regime features
+        if self.use_market_adaptive:
+            df = compute_market_adaptive_features(
+                df,
+                market_name=self.market_name,
+                strategy_config=self.strategy_config,
+            )
+        df = detect_regime(df, market_name=self.market_name)
 
         # Get the last row of features (current state)
         exclude_cols = {
@@ -428,6 +473,16 @@ def main():
         default=None,
         help="NewsAPI key for richer news data",
     )
+    parser.add_argument(
+        "--no-ensemble",
+        action="store_true",
+        help="Disable ensemble (use single XGBoost model)",
+    )
+    parser.add_argument(
+        "--no-adaptive",
+        action="store_true",
+        help="Disable market-adaptive features",
+    )
 
     args = parser.parse_args()
 
@@ -437,6 +492,8 @@ def main():
         tickers=args.tickers,
         use_sentiment=args.sentiment,
         newsapi_key=args.newsapi_key,
+        use_ensemble=not args.no_ensemble,
+        use_market_adaptive=not args.no_adaptive,
     )
 
     if args.horizon:

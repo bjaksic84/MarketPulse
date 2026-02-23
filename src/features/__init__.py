@@ -7,6 +7,10 @@ from .feature_selection import (
     filter_correlated,
     select_features_pipeline,
 )
+from .market_adaptive import (
+    compute_market_adaptive_features,
+    get_adaptive_feature_names,
+)
 
 __all__ = [
     "compute_technical_indicators",
@@ -16,4 +20,6 @@ __all__ = [
     "select_by_mutual_info",
     "filter_correlated",
     "select_features_pipeline",
+    "compute_market_adaptive_features",
+    "get_adaptive_feature_names",
 ]

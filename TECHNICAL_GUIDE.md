@@ -1,6 +1,6 @@
-# MarketPulse — Phase 1 Technical Guide
+# MarketPulse — Technical Guide (Phases 1–3)
 
-> **Version:** Phase 1 (Core MVP)  
+> **Version:** Phase 3 (Multi-Market + Ensemble)  
 > **Updated:** February 2026
 
 This document explains every component of the Phase 1 codebase: what each file does, the exact math behind each feature and model, how the YAML configs drive the system, and how to run tests and the full pipeline.
@@ -952,3 +952,231 @@ Phase 2 adds 35 new tests (90 total):
 |---|---|---|
 | `test_feature_selection.py` | 17 | Correlation filter, importance selection, MI selection, pipeline |
 | `test_sentiment.py` | 18 | Aggregation, merging, FinBERT (mocked), news fetcher structure |
+
+---
+
+# Phase 3 — Multi-Market, Ensemble & Regime Detection
+
+> **Updated:** Phase 3
+
+Phase 3 transforms MarketPulse from a stocks-only tool into a **multi-market prediction system** with market-adaptive features, ensemble modelling, and regime detection.
+
+---
+
+## Phase 3 New Files
+
+```
+config/strategies/
+├── crypto_short_term.yaml      # Crypto-specific thresholds & params
+├── futures_short_term.yaml     # Futures-specific strategy
+├── indices_short_term.yaml     # Indices-specific strategy
+└── short_term.yaml             # UPDATED: ensemble + market_adaptive sections
+
+src/features/
+└── market_adaptive.py          # Market-specific feature generators
+
+src/models/
+├── lightgbm_classifier.py      # LightGBM wrapper (MarketPulseLGBClassifier)
+└── ensemble.py                 # Weighted soft-voting ensemble
+
+src/analysis/
+└── regime.py                   # Market regime detector (bull/neutral/bear)
+
+notebooks/
+└── 07_multi_market.ipynb       # Cross-market comparison & ensemble analysis
+
+tests/
+└── test_phase3.py              # 37 new tests for Phase 3 modules
+```
+
+---
+
+## Market-Specific Strategy Configs
+
+Each market gets a tuned YAML config reflecting its unique characteristics:
+
+| Setting | Stocks | Crypto | Futures | Indices |
+|---|---|---|---|---|
+| **Threshold** | ±1.0% | ±2.0% | ±0.8% | ±0.5% |
+| **Max Depth** | 6 | 8 | 5 | 5 |
+| **N Estimators** | 300 | 400 | 250 | 350 |
+| **Learning Rate** | 0.05 | 0.03 | 0.05 | 0.04 |
+| **Initial Train** | 504d (~2y) | 365d (~1y) | 504d (~2y) | 504d (~2y) |
+| **Test Window** | 21d | 14d | 21d | 21d |
+| **Years History** | 5 | 4 | 5 | 8 |
+
+**Why different?**
+- **Crypto** has extreme volatility → wider threshold (±2%), deeper trees to capture non-linear patterns, shorter training window (pre-2020 data is a different market)
+- **Futures** are leveraged → smaller threshold (±0.8%), shallower trees (cleaner signals), gap analysis for overnight settlement gaps
+- **Indices** are diversified → smallest threshold (±0.5%), longer history captures mean-reversion patterns, VIX-proxy features
+
+---
+
+## Market-Adaptive Features
+
+`src/features/market_adaptive.py` generates features tailored to each market type.
+
+### Universal Features (all markets)
+
+| Feature | Formula | Purpose |
+|---|---|---|
+| `vol_regime_ratio` | $\sigma_{10} / \sigma_{60}$ | Volatility expansion/contraction |
+| `vol_expansion` | $\mathbb{1}[\text{ratio} > 1]$ | Binary vol expansion flag |
+| `vol_regime_label` | Tercile of ratio (0/1/2) | Categorical regime |
+| `volume_zscore` | $(V_t - \bar{V}_{20}) / \sigma_{V,20}$ | Standardised volume |
+| `volume_spike` | $\mathbb{1}[V_t > k \cdot \bar{V}_{20}]$ | Volume spike flag |
+| `volume_momentum_5d` | $\sum V_{5d} / \sum V_{20d}$ | Short-term volume momentum |
+
+### Crypto-Only Features
+
+| Feature | Formula | Purpose |
+|---|---|---|
+| `is_weekend` | $\mathbb{1}[\text{DOW} \geq 5]$ | Weekend trading flag (crypto is 24/7) |
+| `day_of_week` | DOW / 6 (normalised) | Weekday seasonality |
+| `extreme_up/down` | $\mathbb{1}[\|r_t\| > 5\%]$ | Extreme move indicators |
+| `return_dispersion_5d` | $\max(r_{5d}) - \min(r_{5d})$ | Short-term return range |
+
+### Futures-Only Features
+
+| Feature | Formula | Purpose |
+|---|---|---|
+| `settlement_gap` | $O_t / C_{t-1} - 1$ | Overnight settlement gap |
+| `is_month_end_week` | $\mathbb{1}[\text{day} \geq 25]$ | Contract roll proximity |
+| `momentum_streak` | Consecutive same-sign returns | Trend persistence (futures trend more) |
+| `trend_consistency_20d` | Fraction of days trending | How clean is the trend? |
+
+### Index-Only Features
+
+| Feature | Formula | Purpose |
+|---|---|---|
+| `reversion_zscore_{w}d` | $(P - \text{MA}_w) / \sigma_w$ for $w \in \{10,20,50\}$ | Mean-reversion signal |
+| `dist_52w_high` | $(P - H_{252}) / H_{252}$ | Distance from 52-week high |
+| `realized_vol_{10,30}d` | $\sigma_w \times \sqrt{252}$ | Annualised realised vol (VIX proxy) |
+| `vol_term_structure` | $\text{vol}_{10d} / \text{vol}_{30d}$ | Short vs long vol (inverted = fear) |
+| `days_since_big_move` | Count since $\|r_t\| > 1\%$ | Range compression → breakout signal |
+
+### Gap Features (Stocks + Futures + Indices)
+
+| Feature | Formula | Purpose |
+|---|---|---|
+| `overnight_gap` | $O_t / C_{t-1} - 1$ | Pre-market reaction |
+| `gap_fill_ratio` | How much of the gap was closed intraday | Gap fill tendency |
+| `gap_volatility_20d` | $\sigma_{\text{gap}, 20d}$ | Gap predictability |
+
+---
+
+## LightGBM Classifier
+
+`src/models/lightgbm_classifier.py` — wraps LightGBM with the same API as the XGBoost classifier.
+
+**Key differences from XGBoost:**
+- **Leaf-wise growth** (vs depth-wise) → deeper, more specialised trees
+- **Histogram-based binning** → faster training on large datasets
+- **num_leaves=31** parameter controls tree complexity (instead of max_depth as primary)
+- **Built-in categorical support** (future option)
+
+API: `fit()`, `predict()`, `predict_proba()`, `get_feature_importance()`, `from_strategy_config()`
+
+---
+
+## Ensemble Model
+
+`src/models/ensemble.py` — weighted soft-voting ensemble.
+
+### Ensemble Prediction
+
+$$P_{\text{ensemble}}(c) = \frac{\sum_{i} w_i \cdot P_i(c)}{\sum_{i} w_i}$$
+
+Where $P_i(c)$ is model $i$'s probability for class $c$, and $w_i$ is the model weight.
+
+### Agreement Score
+
+When all models predict the same class, agreement = 1.0. Predictions with high agreement tend to be more reliable.
+
+$$\text{agreement} = \frac{\max(\text{class\_counts})}{\text{num\_models}}$$
+
+### Config
+
+```yaml
+ensemble:
+  enabled: true
+  models:
+    - type: "xgboost_classifier"
+      weight: 0.5
+    - type: "lightgbm_classifier"
+      weight: 0.5
+```
+
+---
+
+## Market Regime Detector
+
+`src/analysis/regime.py` — rules-based regime detection with no look-ahead bias.
+
+### Three Regimes
+
+| ID | Label | Characteristics |
+|---|---|---|
+| 0 | **Bearish** | Downtrend, high/rising vol |
+| 1 | **Neutral** | Range-bound, moderate vol |
+| 2 | **Bullish** | Uptrend, low/falling vol |
+
+### Algorithm
+
+1. **Trend direction**: Short EMA vs Long EMA → normalised to [-1, +1]
+2. **Trend strength**: ADX-proxy = $|\bar{r}_w| / \overline{|r|}_w$ → [0, 1]
+3. **Volatility regime**: $\sigma_{\text{short}} / \sigma_{\text{long}}$
+4. **Combine**: $\text{score} = \text{dir} \times \text{strength} - \text{vol\_penalty}$
+5. **Smooth**: Majority vote over a rolling window to avoid whipsaws
+
+### Per-Market Tuning
+
+| Setting | Stocks | Crypto | Futures | Indices |
+|---|---|---|---|---|
+| Short trend | 20 | 10 | 15 | 20 |
+| Long trend | 50 | 30 | 40 | 50 |
+| Smooth window | 5 | 3 | 5 | 7 |
+
+Crypto uses shorter windows (faster regime shifts). Indices use longer smoothing (more stable regimes).
+
+---
+
+## Updated Training Pipeline
+
+The trainer (`src/models/trainer.py`) now supports:
+
+1. **`--no-ensemble`** flag to disable ensemble (use single XGBoost)
+2. **`--no-adaptive`** flag to disable market-adaptive features
+3. Automatic regime detection for all runs
+4. Per-market strategy configs: `python -m src.models.trainer --market crypto --strategy crypto_short_term`
+
+### Pipeline Flow (Phase 3)
+
+```
+Fetch → Preprocess → Technical Features → Return Features
+    → Market-Adaptive Features (per market type)
+    → Regime Detection
+    → Labels → Walk-Forward Validation
+        → Ensemble(XGBoost + LightGBM) or Single Model
+        → Evaluate per fold → Aggregate Report
+```
+
+---
+
+## Phase 3 Test Coverage
+
+Phase 3 adds 37 new tests (127 total):
+
+| Test Class | Tests | Covers |
+|---|---|---|
+| `TestVolatilityRegime` | 2 | Vol regime ratio, expansion flag, label |
+| `TestGapFeatures` | 2 | Gap columns, direction flags |
+| `TestVolumeSpike` | 2 | Spike detection, custom thresholds |
+| `TestCryptoFeatures` | 2 | Weekend detection, extreme moves |
+| `TestFuturesFeatures` | 2 | Session patterns, momentum streaks |
+| `TestIndexFeatures` | 2 | Mean-reversion, 52w high distance |
+| `TestAdaptiveDispatcher` | 5 | All 4 markets + feature listing |
+| `TestRegimeConfig` | 2 | Defaults, per-market configs |
+| `TestRegimeDetector` | 7 | Columns, values, bounds, summary, transitions |
+| `TestLGBClassifier` | 5 | Fit/predict, proba, importance, binary |
+| `TestEnsemble` | 6 | Fit/predict, agreement, individual preds, fallback |

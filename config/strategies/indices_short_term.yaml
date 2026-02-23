@@ -1,0 +1,82 @@
+# Indices Short-Term Strategy Configuration
+# Tailored for broad market indices (S&P 500, Dow, Nasdaq, etc.)
+#
+# Key differences from stocks:
+# - Lower FLAT threshold (±0.5%) — indices are diversified, move less than single stocks
+# - Mean-reversion bias — indices tend to revert to trend
+# - VIX integration — volatility index as a direct feature
+# - Breadth features — how many components are rising/falling
+
+strategy:
+  name: "indices_short_term"
+  display_name: "Index Short-Term (1-5 Days)"
+
+  horizon_days: [1, 3, 5]
+  default_horizon: 1
+
+  # Narrow threshold — indices are diversified and move less
+  label_type: "classification"
+  num_classes: 3
+  threshold: 0.005              # ±0.5% (indices move ~half as much as single stocks)
+
+  features:
+    - technical
+    - returns
+    - market_adaptive
+    - sentiment
+
+  # Model — moderate depth, strong regularization
+  model:
+    type: "xgboost_classifier"
+    hyperparameters:
+      max_depth: 5               # Shallower (index movements are smoother)
+      n_estimators: 350
+      learning_rate: 0.04
+      subsample: 0.8
+      colsample_bytree: 0.8
+      min_child_weight: 3
+      gamma: 0.1
+      reg_alpha: 0.15
+      reg_lambda: 1.2
+      random_state: 42
+      n_jobs: -1
+      eval_metric: "mlogloss"
+
+  ensemble:
+    enabled: true
+    models:
+      - type: "xgboost_classifier"
+        weight: 0.5
+      - type: "lightgbm_classifier"
+        weight: 0.5
+
+  lookback_days: 60
+
+  # Standard walk-forward
+  validation:
+    method: "walk_forward"
+    initial_train_days: 504
+    test_days: 21
+    step_days: 21
+    min_train_samples: 400
+
+  data:
+    years_of_history: 5
+    min_data_points: 1000
+    max_missing_pct: 0.03
+
+  feature_selection:
+    method: "importance"
+    max_features: 18             # More features (includes VIX, breadth)
+    min_importance: 0.005
+
+  # Index-specific adaptive features
+  market_adaptive:
+    weekend_effects: false
+    gap_analysis: true           # Monday gap effects on indices
+    volatility_regime: true      # VIX regime detection
+    mean_reversion: true         # Indices mean-revert more than stocks
+    correlation_features: true
+    volume_spike_multiplier: 2.0
+
+  retrain_frequency: "weekly"

@@ -18,7 +18,8 @@ strategy:
   features:
     - technical
     - returns
-    - sentiment  # Phase 2: requires --sentiment flag
+    - market_adaptive            # Phase 3: market-specific features
+    - sentiment                  # Phase 2: requires --sentiment flag
 
   # Model configuration
   model:
@@ -36,6 +37,15 @@ strategy:
       random_state: 42
       n_jobs: -1
       eval_metric: "mlogloss"
+
+  # Ensemble (Phase 3) — combine XGBoost + LightGBM
+  ensemble:
+    enabled: true
+    models:
+      - type: "xgboost_classifier"
+        weight: 0.5
+      - type: "lightgbm_classifier"
+        weight: 0.5
 
   # Feature lookback window (trading days)
   lookback_days: 60
@@ -59,6 +69,15 @@ strategy:
     method: "importance"       # importance | mutual_info | none
     max_features: 15           # keep top N features
     min_importance: 0.01       # drop features with <1% importance
+
+  # Stock-specific adaptive feature settings
+  market_adaptive:
+    weekend_effects: false       # Stocks don't trade weekends
+    gap_analysis: true           # Overnight gaps (earnings, news)
+    volatility_regime: true      # VIX-based regime detection
+    mean_reversion: false        # Single stocks trend more than revert
+    correlation_features: true   # Sector/benchmark correlation
+    volume_spike_multiplier: 2.5 # 2.5x avg = spike
 
   # Retraining schedule (for production)
   retrain_frequency: "weekly"

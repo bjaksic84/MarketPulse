@@ -1,0 +1,81 @@
+# Futures Short-Term Strategy Configuration
+# Tailored for leveraged, macro-driven instruments (ES, GC, CL, etc.)
+#
+# Key differences from stocks:
+# - Moderate FLAT threshold (±0.8%) — futures are leveraged, smaller moves matter
+# - Conservative model — futures have cleaner trends but sudden reversals
+# - Extended hours features — overnight gap analysis
+# - Cross-asset correlation features — futures are macro-correlated
+
+strategy:
+  name: "futures_short_term"
+  display_name: "Futures Short-Term (1-5 Days)"
+
+  horizon_days: [1, 3, 5]
+  default_horizon: 1
+
+  # Tighter threshold — futures are leveraged, even small moves = big P&L
+  label_type: "classification"
+  num_classes: 3
+  threshold: 0.008              # ±0.8%
+
+  features:
+    - technical
+    - returns
+    - market_adaptive
+    - sentiment
+
+  # Conservative model — futures have cleaner signals but regime breaks
+  model:
+    type: "xgboost_classifier"
+    hyperparameters:
+      max_depth: 5               # Shallower (futures signals are cleaner)
+      n_estimators: 250
+      learning_rate: 0.05
+      subsample: 0.85            # Less dropout (cleaner data)
+      colsample_bytree: 0.85
+      min_child_weight: 4
+      gamma: 0.15
+      reg_alpha: 0.2
+      reg_lambda: 1.5
+      random_state: 42
+      n_jobs: -1
+      eval_metric: "mlogloss"
+
+  ensemble:
+    enabled: true
+    models:
+      - type: "xgboost_classifier"
+        weight: 0.5
+      - type: "lightgbm_classifier"
+        weight: 0.5
+
+  lookback_days: 60
+
+  # Standard walk-forward
+  validation:
+    method: "walk_forward"
+    initial_train_days: 504      # ~2 years
+    test_days: 21
+    step_days: 21
+    min_train_samples: 400
+
+  data:
+    years_of_history: 5
+    min_data_points: 800
+    max_missing_pct: 0.05
+
+  feature_selection:
+    method: "importance"
+    max_features: 15
+    min_importance: 0.01
+
+  # Futures-specific adaptive features
+  market_adaptive:
+    weekend_effects: false       # Futures trade almost 24h on weekdays
+    gap_analysis: true           # Overnight gaps matter (session breaks)
+    volatility_regime: true      # Macro vol regimes (VIX-driven)
+    correlation_features: true   # ES↔GC inverse correlation, etc.
+    volume_spike_multiplier: 2.5
+
+  retrain_frequency: "weekly"
