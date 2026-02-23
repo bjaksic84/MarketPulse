@@ -18,7 +18,7 @@ strategy:
   features:
     - technical
     - returns
-    # - sentiment  # Phase 2
+    - sentiment  # Phase 2: requires --sentiment flag
 
   # Model configuration
   model:

@@ -31,6 +31,13 @@ from ..utils.validation import WalkForwardValidator
 from .evaluator import EvaluationReport, MarketPulseEvaluator
 from .xgboost_classifier import MarketPulseXGBClassifier
 
+# Sentiment (Phase 2) — optional import
+try:
+    from ..features.sentiment import fetch_and_score_news, merge_sentiment_features
+    SENTIMENT_AVAILABLE = True
+except ImportError:
+    SENTIMENT_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -52,6 +59,9 @@ class MarketPulseTrainer:
         market_name: str = "stocks",
         strategy_name: str = "short_term",
         tickers: Optional[List[str]] = None,
+        use_sentiment: bool = False,
+        newsapi_key: Optional[str] = None,
+        sentiment_days: int = 60,
     ):
         # Load configs
         self.market_config = load_market_config(market_name)
@@ -85,6 +95,16 @@ class MarketPulseTrainer:
         # Results storage
         self.reports: Dict[str, EvaluationReport] = {}
         self.models: Dict[str, MarketPulseXGBClassifier] = {}
+
+        # Sentiment settings (Phase 2)
+        self.use_sentiment = use_sentiment and SENTIMENT_AVAILABLE
+        self.newsapi_key = newsapi_key
+        self.sentiment_days = sentiment_days
+        if use_sentiment and not SENTIMENT_AVAILABLE:
+            logger.warning(
+                "Sentiment requested but transformers/torch not installed. "
+                "Install with: pip install transformers torch"
+            )
 
     def run(self, verbose: bool = True) -> Dict[str, EvaluationReport]:
         """Execute the full training pipeline for all tickers.
@@ -169,6 +189,20 @@ class MarketPulseTrainer:
 
         logger.info("Computing return features...")
         df = compute_return_features(df)
+
+        # 3b. Sentiment features (Phase 2)
+        if self.use_sentiment:
+            logger.info("Fetching & scoring news sentiment...")
+            try:
+                _, daily_sentiment = fetch_and_score_news(
+                    ticker=base_ticker,
+                    newsapi_key=self.newsapi_key,
+                    days_back=self.sentiment_days,
+                )
+                df = merge_sentiment_features(df, daily_sentiment)
+                logger.info(f"  Added {len(daily_sentiment.columns)} sentiment features")
+            except Exception as e:
+                logger.warning(f"Sentiment failed for {base_ticker}: {e}")
 
         # 4. Generate labels
         logger.info(f"Generating labels (horizon={self.horizon}d)...")
@@ -383,6 +417,17 @@ def main():
         default=None,
         help="Override prediction horizon (days)",
     )
+    parser.add_argument(
+        "--sentiment",
+        action="store_true",
+        help="Enable sentiment features (Phase 2)",
+    )
+    parser.add_argument(
+        "--newsapi-key",
+        type=str,
+        default=None,
+        help="NewsAPI key for richer news data",
+    )
 
     args = parser.parse_args()
 
@@ -390,6 +435,8 @@ def main():
         market_name=args.market,
         strategy_name=args.strategy,
         tickers=args.tickers,
+        use_sentiment=args.sentiment,
+        newsapi_key=args.newsapi_key,
     )
 
     if args.horizon:

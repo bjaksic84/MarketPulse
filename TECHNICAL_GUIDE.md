@@ -825,3 +825,130 @@ Every prediction has SHAP values attached. You can always ask "why did the model
 ---
 
 *This document covers Phase 1 (Core MVP). Future phases will add sentiment analysis (Phase 2), news integration (Phase 3), fundamental data (Phase 4), and production deployment (Phase 5+).*
+
+---
+
+## Phase 2: Sentiment Analysis & Model Tuning
+
+### New Modules Added
+
+#### `src/features/feature_selection.py`
+
+Reduces the 60+ feature set to the most predictive subset.
+
+**Methods:**
+
+| Function | Description |
+|---|---|
+| `select_by_importance()` | Rank by XGBoost gain, keep top N |
+| `select_by_mutual_info()` | Rank by mutual information with target label |
+| `filter_correlated()` | Remove features with \|r\| > threshold, keep the more important one |
+| `select_features_pipeline()` | Combined: correlation filter → ranking → top N |
+
+**Math — Mutual Information:**
+
+$$I(X; Y) = \sum_{y} \sum_{x} p(x, y) \log \frac{p(x, y)}{p(x) p(y)}$$
+
+MI measures how much knowing feature $X$ reduces uncertainty about label $Y$. Unlike linear correlation, MI captures non-linear relationships.
+
+**Correlation Filter Logic:**
+For each pair $(f_i, f_j)$ with $|r_{ij}| > \theta$, drop the feature with lower XGBoost importance.
+
+#### `src/models/tuner.py`
+
+Hyperparameter optimization using walk-forward CV as the objective.
+
+**Methods:**
+
+| Method | Algorithm | Pros |
+|---|---|---|
+| `tune_optuna()` | Bayesian (TPE) | Most efficient, learns from previous trials |
+| `tune_random()` | Random search | Simple baseline, no extra dependencies |
+
+**Search Space (9 dimensions):**
+- `max_depth` ∈ [3, 10], `n_estimators` ∈ [100, 800], `learning_rate` ∈ [0.01, 0.3]
+- `subsample`, `colsample_bytree` ∈ [0.4, 1.0]
+- `min_child_weight` ∈ [1, 10], `gamma` ∈ [0, 1]
+- `reg_alpha`, `reg_lambda` ∈ [10⁻³, 10] (log-scale)
+
+**CLI:**
+```bash
+python -m src.models.tuner --ticker AAPL --trials 30 --method optuna --folds 10
+```
+
+**Convenience function:**
+```python
+from src.models.tuner import quick_tune
+best_params, score, trials_df = quick_tune("AAPL", n_trials=30)
+```
+
+#### `src/data/news_fetcher.py`
+
+Multi-source news aggregator with 3 backends:
+
+| Source | API Key? | History | Rate Limit |
+|---|---|---|---|
+| yfinance | No | ~Latest only | Unlimited |
+| GDELT | No | 3 months | Unlimited |
+| NewsAPI | Yes (free) | 1 month | 100 req/day |
+
+All sources return standardized records with `title`, `source`, `published`, `url`, `ticker`.
+
+**Usage:**
+```python
+from src.data.news_fetcher import AggregateNewsFetcher
+fetcher = AggregateNewsFetcher(newsapi_key="optional")
+news_df = fetcher.fetch_all("Apple", start_date="2024-01-01")
+```
+
+#### `src/features/sentiment.py`
+
+FinBERT-powered sentiment scoring and daily feature aggregation.
+
+**FinBERT Model:** `ProsusAI/finbert` — BERT fine-tuned on 60,000 financial sentences.
+
+| Output | Score |
+|---|---|
+| Positive | +1.0 |
+| Neutral | 0.0 |
+| Negative | −1.0 |
+
+**Daily Aggregated Features (8 total):**
+
+| Feature | Description |
+|---|---|
+| `sentiment_mean` | Average headline sentiment (−1 to +1) |
+| `sentiment_std` | Sentiment dispersion (disagreement among headlines) |
+| `sentiment_count` | Number of headlines (news volume proxy) |
+| `sentiment_positive_ratio` | Fraction of positive headlines |
+| `sentiment_negative_ratio` | Fraction of negative headlines |
+| `sentiment_momentum_3d` | 3-day rolling mean of daily sentiment |
+| `sentiment_momentum_5d` | 5-day rolling mean of daily sentiment |
+| `sentiment_surprise` | Today's sentiment − 5d rolling mean (contrarian signal) |
+
+**Sentiment Surprise:**
+
+$$\text{surprise}_t = s_t - \frac{1}{5}\sum_{i=1}^{5} s_{t-i}$$
+
+A large positive surprise indicates unexpectedly bullish news → potential UP signal.
+
+**CLI (sentiment-enabled training):**
+```bash
+python -m src.models.trainer --tickers AAPL --sentiment --newsapi-key YOUR_KEY
+```
+
+### Notebooks Added
+
+| Notebook | Purpose |
+|---|---|
+| `05_tuning.ipynb` | Feature selection comparison, Optuna tuning, default vs tuned evaluation |
+| `06_sentiment.ipynb` | News fetching, FinBERT scoring, daily aggregation, impact analysis |
+
+### Test Coverage
+
+Phase 2 adds 35 new tests (90 total):
+
+| Test File | Tests | Covers |
+|---|---|---|
+| `test_feature_selection.py` | 17 | Correlation filter, importance selection, MI selection, pipeline |
+| `test_sentiment.py` | 18 | Aggregation, merging, FinBERT (mocked), news fetcher structure |

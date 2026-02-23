@@ -25,9 +25,16 @@ plotly>=5.15
 # Dashboard
 streamlit>=1.28
 
-# NLP / Sentiment (Phase 2 prep)
-# transformers>=4.30
-# torch>=2.0
+# NLP / Sentiment (Phase 2)
+transformers>=4.30
+torch>=2.0
+requests>=2.31
+
+# Hyperparameter Tuning
+optuna>=3.4
+
+# News API (optional — free tier at newsapi.org)
+# newsapi-python>=0.2.7
 
 # Testing
 pytest>=7.4
