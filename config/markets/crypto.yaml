@@ -1,0 +1,37 @@
+# Crypto Market Configuration
+
+market:
+  name: "crypto"
+  display_name: "Cryptocurrency"
+  data_source: "yfinance"
+
+  ticker_format: "{symbol}-USD"
+
+  calendar: "24_7"
+  trading_days_per_year: 365
+  session: "24_7"
+
+  default_tickers:
+    - BTC
+    - ETH
+    - SOL
+    - ADA
+    - AVAX
+    - DOGE
+    - DOT
+    - LINK
+    - MATIC
+    - XRP
+
+  benchmark: "BTC"
+
+  volume_normalization: "z_score"
+
+  has_splits: false
+  has_dividends: false
+  use_adjusted_close: false
+  has_gaps: false
+
+  feature_modules:
+    - technical
+    - returns

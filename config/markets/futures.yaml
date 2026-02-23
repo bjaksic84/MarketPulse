@@ -1,0 +1,34 @@
+# Futures Market Configuration
+
+market:
+  name: "futures"
+  display_name: "Futures"
+  data_source: "yfinance"
+
+  ticker_format: "{symbol}=F"
+
+  calendar: "CME"
+  trading_days_per_year: 251
+  session: "extended"
+
+  default_tickers:
+    - ES    # E-mini S&P 500
+    - NQ    # E-mini Nasdaq
+    - GC    # Gold
+    - CL    # Crude Oil (WTI)
+    - ZN    # 10-Year Treasury
+    - ZC    # Corn
+    - SI    # Silver
+
+  benchmark: "ES"
+
+  volume_normalization: "z_score"
+
+  has_splits: false
+  has_dividends: false
+  use_adjusted_close: false
+  has_gaps: true
+
+  feature_modules:
+    - technical
+    - returns

@@ -1,0 +1,52 @@
+# Stock Market Configuration
+# Used by the data fetcher to handle stock-specific settings
+
+market:
+  name: "stocks"
+  display_name: "US Equities"
+  data_source: "yfinance"
+
+  # How to construct the yfinance ticker from a base symbol
+  # For stocks, it's just the plain symbol
+  ticker_format: "{symbol}"
+
+  # Trading calendar
+  calendar: "NYSE"
+  trading_days_per_year: 252
+  session: "regular_hours"  # regular_hours | extended | 24_7
+
+  # Default universe of tickers for this market
+  default_tickers:
+    - AAPL
+    - MSFT
+    - GOOGL
+    - AMZN
+    - TSLA
+    - NVDA
+    - META
+    - JPM
+    - GS
+    - JNJ
+    - XOM
+    - V
+    - MA
+    - SPY
+
+  # Benchmark ticker for beta calculation
+  benchmark: "SPY"
+
+  # Volume normalization method
+  volume_normalization: "z_score"  # z_score | min_max | log
+
+  # Data quirks
+  has_splits: true
+  has_dividends: true
+  use_adjusted_close: true
+  has_gaps: true  # weekends/holidays create gaps
+
+  # Applicable feature modules
+  feature_modules:
+    - technical
+    - returns
+    # - fundamental  # Phase 4+
+    # - sentiment    # Phase 2+

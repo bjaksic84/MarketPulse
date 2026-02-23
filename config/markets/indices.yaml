@@ -1,0 +1,32 @@
+# Index Market Configuration
+
+market:
+  name: "indices"
+  display_name: "Market Indices"
+  data_source: "yfinance"
+
+  ticker_format: "^{symbol}"
+
+  calendar: "NYSE"
+  trading_days_per_year: 252
+  session: "regular_hours"
+
+  default_tickers:
+    - GSPC    # S&P 500
+    - DJI     # Dow Jones
+    - IXIC    # Nasdaq Composite
+    - RUT     # Russell 2000
+    - VIX     # Volatility Index
+
+  benchmark: "GSPC"
+
+  volume_normalization: "z_score"
+
+  has_splits: false
+  has_dividends: false
+  use_adjusted_close: false
+  has_gaps: true
+
+  feature_modules:
+    - technical
+    - returns

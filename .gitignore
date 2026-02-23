@@ -1,0 +1,55 @@
+# ──────────────── Virtual Environment ────────────────
+venv/
+env/
+.venv/
+.env/
+
+# ──────────────── Python ────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+eggs/
+*.whl
+
+# ──────────────── Jupyter Notebooks ────────────────
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ──────────────── IDE / Editor ────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ──────────────── pytest ────────────────
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# ──────────────── Model Artifacts ────────────────
+models/saved/
+*.pkl
+*.joblib
+*.h5
+
+# ──────────────── Data Cache ────────────────
+data/raw/
+data/cache/
+*.csv
+*.parquet
+
+# ──────────────── Logs ────────────────
+*.log
+logs/
+
+# ──────────────── OS ────────────────
+Thumbs.db
+.DS_Store
